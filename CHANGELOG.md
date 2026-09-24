@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Published on PyPI: `pipx install repodx`
+
 ## 0.3.0
 
 - Tested against eight large public repositories. Critical false alarms went from 136 to 0; the one remaining critical finding is real.
