@@ -1,0 +1,4 @@
+# Paths RepoDx skips when scanning this repository (gitignore syntax).
+# These folders are intentionally broken fixtures.
+sample_repo/
+tests/

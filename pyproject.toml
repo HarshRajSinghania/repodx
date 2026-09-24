@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repodx"
+version = "0.2.0"
+description = "Check your AI-built project for leaked secrets, unsafe Supabase/Firebase config and committed junk before you push."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["secrets", "security", "gitignore", "supabase", "firebase", "vibe-coding", "pre-commit", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/omerbek/repodx"
+
+[project.scripts]
+repodx = "repodx:cli"
+
+[tool.setuptools]
+py-modules = ["repodx"]

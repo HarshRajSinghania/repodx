@@ -1,3 +1,6 @@
+import base64
+import io
+import json
 import tempfile
 import unittest
 from unittest import mock
@@ -516,29 +519,307 @@ class RepoDxTests(unittest.TestCase):
                 ],
             )
 
-    def test_build_report_combines_all_checks(self):
-        sample_path = Path("sample_repo")
+    def test_build_report_scores_sample_repo(self):
+        report = repodx.build_report(Path("sample_repo"))
+        found = {(finding["id"], finding["path"], finding["detail"]) for finding in report["findings"]}
 
-        report = repodx.build_report(sample_path)
+        self.assertEqual(report["counts"], {"critical": 3, "warning": 8, "info": 3})
+        self.assertEqual(report["grade"], "F")
+        self.assertIn(("database-url", "app.js", "hunter...ke"), found)
+        self.assertIn(("env-file", ".env", None), found)
+        self.assertIn(("firebase-rules", "firestore.rules", None), found)
+        self.assertIn(("supabase-rls", "supabase/migrations/001_init.sql", "profiles"), found)
+        self.assertIn(("junk", "node_modules/", None), found)
+        self.assertIn(("license", None, None), found)
+        self.assertIn(("env-example", None, None), found)
+
+
+def fake(*parts):
+    """Join parts at runtime so no scanner sees a literal key in this file."""
+    return "".join(parts)
+
+
+def make_repo(temp_dir, files):
+    repo_path = Path(temp_dir)
+
+    for relative_text, content in files.items():
+        path = repo_path / relative_text
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    return repo_path
+
+
+def findings_for(repo_path, check_id):
+    report = repodx.build_report(repo_path)
+    return [finding for finding in report["findings"] if finding["id"] == check_id]
+
+
+class SecretScanTests(unittest.TestCase):
+    def test_detects_provider_keys(self):
+        keys = {
+            "OpenAI API key": fake("sk-", "proj-", "A1b2C3d4E5f6G7h8I9j0K1l2"),
+            "Anthropic API key": fake("sk-", "ant-", "api03-", "A1b2C3d4E5f6G7h8I9j0"),
+            "AWS access key": fake("AKIA", "ABCDEFGHIJKLMNOP"),
+            "GitHub token": fake("ghp", "_", "A" * 36),
+            "Stripe secret key": fake("sk", "_live_", "A1b2C3d4E5f6G7h8I9j0K1"),
+            "Supabase secret key": fake("sb", "_secret_", "A1b2C3d4E5f6G7h8I9j0K1"),
+            "Private key": fake("-----BEGIN ", "RSA PRIVATE KEY-----"),
+        }
+
+        for name, key in keys.items():
+            with self.subTest(name=name):
+                hits = repodx.scan_line_for_secrets(f'const key = "{key}";')
+
+                self.assertEqual([(hit[0], hit[1], hit[2]) for hit in hits], [("secret", "critical", name)])
+
+    def test_reports_secret_location_and_masks_value(self):
+        key = fake("sk-", "proj-", "A1b2C3d4E5f6G7h8I9j0K1l2")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {"src/app.js": f"// setup\nconst key = '{key}';\n"})
+
+            result = findings_for(repo_path, "secret")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual((result[0]["path"], result[0]["line"]), ("src/app.js", 2))
+        self.assertEqual(result[0]["detail"], "sk-pro...l2")
+        self.assertNotIn(key, result[0]["detail"])
+
+    def test_skips_files_ignored_by_gitignore(self):
+        key = fake("sk-", "proj-", "A1b2C3d4E5f6G7h8I9j0K1l2")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {".gitignore": ".env\n", ".env": f"OPENAI_API_KEY={key}\n"})
+
+            self.assertEqual(findings_for(repo_path, "secret"), [])
+            self.assertEqual(findings_for(repo_path, "env-file"), [])
+
+    def test_inline_ignore_marker_suppresses_finding(self):
+        key = fake("AKIA", "ABCDEFGHIJKLMNOP")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {"docs.md": f"Example: {key} <!-- repodx:ignore -->\n"})
+
+            self.assertEqual(findings_for(repo_path, "secret"), [])
+
+    def test_repodxignore_excludes_paths(self):
+        key = fake("AKIA", "ABCDEFGHIJKLMNOP")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(
+                temp_dir,
+                {".repodxignore": "fixtures/\n", "fixtures/key.txt": key, "fixtures/node_modules/x.js": ""},
+            )
+
+            report = repodx.build_report(repo_path)
+
+        self.assertEqual([f for f in report["findings"] if f["path"] and "fixtures" in f["path"]], [])
+
+    def test_skips_binary_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / "image.png").write_bytes(b"\x89PNG\0" + fake("AKIA", "ABCDEFGHIJKLMNOP").encode())
+
+            self.assertEqual(findings_for(repo_path, "secret"), [])
+
+    def test_google_key_is_a_warning(self):
+        hits = repodx.scan_line_for_secrets(fake("apiKey: 'AIza", "A" * 35, "'"))
+
+        self.assertEqual([(hit[0], hit[1]) for hit in hits], [("google-api-key", "warning")])
+
+    def test_detects_supabase_service_role_jwt_but_not_anon(self):
+        def jwt(role):
+            header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').decode().rstrip("=")
+            payload = base64.urlsafe_b64encode(
+                json.dumps({"iss": "supabase", "role": role}).encode()
+            ).decode().rstrip("=")
+            return f"{header}.{payload}.c2lnbmF0dXJlc2lnbmF0dXJl"
+
+        service_hits = repodx.scan_line_for_secrets(f"key = '{jwt('service_role')}'")
+        anon_hits = repodx.scan_line_for_secrets(f"key = '{jwt('anon')}'")
+
+        self.assertEqual([hit[0] for hit in service_hits], ["supabase-service-role"])
+        self.assertEqual(anon_hits, [])
+
+    def test_database_url_ignores_local_hosts_and_placeholders(self):
+        remote = repodx.scan_line_for_secrets("postgres://app:s3cr3t-value@db.prod.example.net:5432/app")
+        local = repodx.scan_line_for_secrets("postgres://app:s3cr3t-value@localhost:5432/app")
+        placeholder = repodx.scan_line_for_secrets("postgres://user:password@db.prod.example.net/app")
+        template = repodx.scan_line_for_secrets("postgres://user:${DB_PASSWORD}@db.prod.example.net/app")
+
+        self.assertEqual([hit[0] for hit in remote], ["database-url"])
+        self.assertEqual((local, placeholder, template), ([], [], []))
+
+
+class ConfigCheckTests(unittest.TestCase):
+    def test_env_file_reported_but_example_is_fine(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(
+                temp_dir,
+                {".env": "A=1\n", ".env.local": "A=1\n", ".env.production": "A=1\n", ".env.example": "A=\n"},
+            )
+
+            result = findings_for(repo_path, "env-file")
 
         self.assertEqual(
-            report,
+            sorted((f["path"], f["severity"]) for f in result),
+            [(".env", "critical"), (".env.local", "critical"), (".env.production", "warning")],
+        )
+
+    def test_env_example_suggested_when_code_reads_env(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {"main.py": "import os\nkey = os.getenv('KEY')\n"})
+            missing = findings_for(repo_path, "env-example")
+            (repo_path / ".env.example").write_text("KEY=\n", encoding="utf-8")
+            present = findings_for(repo_path, "env-example")
+
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(present, [])
+
+    def test_supabase_rls_reports_only_unprotected_public_tables(self):
+        sql = (
+            "create table public.profiles (id uuid);\n"
+            "create table if not exists notes (id int);\n"
+            'ALTER TABLE "public"."notes" ENABLE ROW LEVEL SECURITY;\n'
+            "create table private.audit (id int);\n"
+            "-- create table commented_out (id int);\n"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {"supabase/migrations/001.sql": sql})
+
+            result = findings_for(repo_path, "supabase-rls")
+
+        self.assertEqual([f["detail"] for f in result], ["profiles"])
+
+    def test_firebase_rules_detect_public_access(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(
+                temp_dir,
+                {
+                    "firestore.rules": "allow read, write: if true;\n// allow read: if true;\n",
+                    "database.rules.json": '{"rules": {".read": true, ".write": "auth != null"}}\n',
+                    "storage.rules": "allow read: if request.auth != null;\n",
+                },
+            )
+
+            result = findings_for(repo_path, "firebase-rules")
+
+        self.assertEqual(
+            sorted((f["path"], f["line"]) for f in result),
+            [("database.rules.json", 1), ("firestore.rules", 1)],
+        )
+
+    def test_large_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+
+            with open(repo_path / "model.bin", "wb") as handle:
+                handle.truncate(repodx.LARGE_FILE_LIMIT_BYTES + 1)
+
+            with open(repo_path / "video.mp4", "wb") as handle:
+                handle.truncate(repodx.LARGE_FILE_WARNING_BYTES + 1)
+
+            result = findings_for(repo_path, "large-file")
+
+        self.assertEqual(
+            sorted((f["path"], f["severity"]) for f in result),
+            [("model.bin", "critical"), ("video.mp4", "warning")],
+        )
+
+    def test_build_output_folders_are_junk(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {".next/cache.json": "{}", "dist/app.js": ""})
+
+            self.assertEqual(repodx.find_junk_files(repo_path), [".next/", "dist/"])
+
+    def test_license_check(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            missing = repodx.check_license(repo_path)
+            (repo_path / "LICENSE.md").write_text("MIT", encoding="utf-8")
+
+            self.assertEqual(len(missing), 1)
+            self.assertEqual(repodx.check_license(repo_path), [])
+
+    def test_long_agent_file_is_info(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {"CLAUDE.md": "- rule\n" * 301, "AGENTS.md": "- rule\n"})
+
+            result = findings_for(repo_path, "agent-file-size")
+
+        self.assertEqual([(f["path"], f["detail"]) for f in result], [("CLAUDE.md", "301 lines")])
+
+
+class ReportTests(unittest.TestCase):
+    def clean_repo(self, temp_dir):
+        return make_repo(
+            temp_dir,
             {
-                "junk_items": [
-                    "__pycache__/",
-                    "debug.log",
-                    "node_modules/",
-                ],
-                "gitignore_issues": [
-                    "Missing .gitignore entry: __pycache__/",
-                    "Missing .gitignore entry: .env",
-                    "Missing .gitignore entry: node_modules/",
-                ],
-                "readme_issues": [
-                    "Missing README heading: Installation",
-                    "Missing README heading: Usage",
-                ],
+                ".gitignore": "__pycache__/\n.env\nnode_modules/\n",
+                "LICENSE": "MIT",
+                "README.md": "# App\n\n## Installation\n\n## Usage\n",
             },
+        )
+
+    def test_clean_repo_scores_100(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report = repodx.build_report(self.clean_repo(temp_dir))
+
+        self.assertEqual((report["score"], report["grade"], report["findings"]), (100, "A", []))
+
+    def test_score_and_grade(self):
+        self.assertEqual(repodx.grade_for_score(90), "A")
+        self.assertEqual(repodx.grade_for_score(80), "B")
+        self.assertEqual(repodx.grade_for_score(65), "C")
+        self.assertEqual(repodx.grade_for_score(50), "D")
+        self.assertEqual(repodx.grade_for_score(49), "F")
+
+    def test_main_exit_codes_and_fail_on(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = self.clean_repo(temp_dir)
+
+            with mock.patch("sys.stdout", new=io.StringIO()):
+                self.assertEqual(repodx.main([str(repo_path)]), 0)
+                (repo_path / "debug.log").write_text("log", encoding="utf-8")
+                self.assertEqual(repodx.main([str(repo_path)]), 1)
+                self.assertEqual(repodx.main([str(repo_path), "--fail-on", "critical"]), 0)
+                self.assertEqual(repodx.main([str(repo_path), "--fail-on", "never"]), 0)
+
+            with mock.patch("sys.stderr", new=io.StringIO()):
+                self.assertEqual(repodx.main([str(repo_path / "missing")]), 2)
+
+    def test_json_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = self.clean_repo(temp_dir)
+            output = io.StringIO()
+
+            with mock.patch("sys.stdout", new=output):
+                repodx.main([str(repo_path), "--json"])
+
+        data = json.loads(output.getvalue())
+        self.assertEqual((data["score"], data["grade"], data["findings"]), (100, "A", []))
+
+    def test_markdown_and_text_output_list_fixes(self):
+        report = repodx.build_report(Path("sample_repo"))
+
+        markdown = repodx.format_markdown(report)
+        text = repodx.format_text(report)
+
+        self.assertIn("## RepoDx: 0/100 (F)", markdown)
+        self.assertIn("| critical | Environment file is not ignored | `.env` |", markdown)
+        self.assertIn("[CRITICAL] Firebase rules allow public access", text)
+        self.assertIn("Fix: ", text)
+        self.assertNotIn("\033[", text)
+
+    def test_badge(self):
+        report = {"score": 94, "grade": "A"}
+
+        self.assertEqual(
+            repodx.badge_markdown(report),
+            "[![repodx](https://img.shields.io/badge/repodx-A%2094%2F100-brightgreen)]"
+            "(https://github.com/omerbek/repodx)",
         )
 
 
