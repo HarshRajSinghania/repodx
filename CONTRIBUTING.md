@@ -34,3 +34,11 @@ Pick severities carefully:
 python3 -m unittest discover
 python3 repodx.py .   # the repo must keep scoring 100
 ```
+
+## Releasing
+
+1. Update `__version__` in `repodx.py`, `version` in `pyproject.toml`, the pinned
+   versions in `README.md`, and add a section to `CHANGELOG.md`.
+2. Merge to `main`, then push a tag: `git tag v0.4.0 && git push origin v0.4.0`.
+3. The `release` workflow runs the tests, checks the tag matches the version, and
+   publishes a GitHub release with `repodx.py` attached.
