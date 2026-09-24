@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- Releases are now published to PyPI automatically by the release workflow (trusted publishing, no API tokens).
+- A test keeps the version in `repodx.py`, `pyproject.toml`, `CHANGELOG.md` and the README install examples in sync.
+
 ## 0.3.1
 
 - Published on PyPI: `pipx install repodx`
