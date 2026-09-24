@@ -3,6 +3,7 @@
 import argparse
 import base64
 import fnmatch
+import functools
 import json
 import os
 from pathlib import Path
@@ -10,15 +11,19 @@ import re
 import sys
 
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 COMMON_GITIGNORE_ENTRIES = ["__pycache__/", ".env", "node_modules/"]
 VIRTUAL_ENVIRONMENT_DIRECTORY_NAMES = [".venv", "venv", "env"]
 BUILD_OUTPUT_DIRECTORY_NAMES = [".next", ".nuxt", ".svelte-kit", "dist", "coverage"]
 JUNK_FILE_SUFFIXES = [".tmp", ".log"]
 README_FILE_NAMES = ["readme.md", "readme.markdown", "readme.rst", "readme.txt", "readme"]
-README_INSTALLATION_HEADINGS = ["installation", "install", "kurulum"]
-README_USAGE_HEADINGS = ["usage", "use", "kullanim", "kullanım"]
+README_START_HEADINGS = [
+    "quickstart", "quick start", "getting started", "get started", "running locally", "run locally",
+    "local development", "baslarken", "başlarken", "hizli baslangic", "hızlı başlangıç",
+]
+README_INSTALLATION_HEADINGS = ["installation", "install", "installing", "setup", "set up", "kurulum"] + README_START_HEADINGS
+README_USAGE_HEADINGS = ["usage", "use", "how to use", "example", "examples", "kullanim", "kullanım"] + README_START_HEADINGS
 
 
 def read_gitignore_entries(repo_path, file_name=".gitignore"):
@@ -70,6 +75,35 @@ def has_gitignore_entry(entries, expected_entry):
     return False
 
 
+@functools.lru_cache(maxsize=None)
+def compile_ignore_entries(entries):
+    """Turn gitignore lines into (negated, directory_only, file_rules, directory_rules) once."""
+    rules = []
+
+    for entry in entries:
+        negated = entry.startswith("!")
+        pattern = entry.removeprefix("!").removeprefix("**/").lstrip("/").lower()
+        directory_only = pattern.endswith("/")
+        pattern = pattern.rstrip("/")
+
+        if not pattern:
+            continue
+
+        file_rules = [pattern]
+        # "node_modules/*" and "node_modules/**" are read as ignoring the folder.
+        directory_rules = [pattern, normalize_gitignore_directory_entry(pattern)]
+        rules.append(
+            (
+                negated,
+                directory_only,
+                [("/" in rule, re.compile(fnmatch.translate(rule))) for rule in file_rules if rule],
+                [("/" in rule, re.compile(fnmatch.translate(rule))) for rule in directory_rules if rule],
+            )
+        )
+
+    return rules
+
+
 def is_path_ignored(entries, relative_text, is_directory=False):
     if not entries:
         return False
@@ -79,30 +113,13 @@ def is_path_ignored(entries, relative_text, is_directory=False):
     ignored = False
 
     # Later entries win, so a "!pattern" can re-include an earlier match.
-    for entry in entries:
-        negated = entry.startswith("!")
-        pattern = entry.removeprefix("!").removeprefix("**/").lstrip("/").lower()
-        directory_only = pattern.endswith("/")
-        pattern = pattern.rstrip("/")
-
-        if not pattern or (directory_only and not is_directory):
+    for negated, directory_only, file_rules, directory_rules in compile_ignore_entries(tuple(entries)):
+        if directory_only and not is_directory:
             continue
 
-        candidates = [pattern]
+        rules = directory_rules if is_directory else file_rules
 
-        # "node_modules/*" and "node_modules/**" are read as ignoring the folder.
-        if is_directory:
-            candidates.append(normalize_gitignore_directory_entry(pattern))
-
-        matched = False
-
-        for candidate in candidates:
-            target = relative_text if "/" in candidate else name
-
-            if candidate and fnmatch.fnmatchcase(target, candidate):
-                matched = True
-
-        if matched:
+        if any(rule.match(relative_text if has_slash else name) for has_slash, rule in rules):
             ignored = not negated
 
     return ignored
@@ -113,6 +130,10 @@ def is_virtual_environment(path):
 
 
 def is_junk_directory(path):
+    # JavaScript GitHub Actions must commit their dist/ folder.
+    if path.name == "dist" and any((path.parent / name).is_file() for name in ["action.yml", "action.yaml"]):
+        return False
+
     if path.name in ["__pycache__", "node_modules"] + BUILD_OUTPUT_DIRECTORY_NAMES:
         return True
 
@@ -181,7 +202,26 @@ def find_junk_files(repo_path):
     return scan_tree(repo_path)[0]
 
 
-def check_gitignore(repo_path):
+def expected_gitignore_entries(files):
+    """Pick the entries that matter for this project. Without a file list, expect all of them."""
+    if files is None:
+        return COMMON_GITIGNORE_ENTRIES
+
+    names = {relative_text.rsplit("/", 1)[-1] for relative_text in files}
+    expected = []
+
+    if any(name.endswith(".py") for name in names):
+        expected.append("__pycache__/")
+
+    expected.append(".env")
+
+    if "package.json" in names:
+        expected.append("node_modules/")
+
+    return expected
+
+
+def check_gitignore(repo_path, files=None):
     entries, read_issues = read_gitignore_entries(repo_path)
 
     if entries is None:
@@ -192,9 +232,15 @@ def check_gitignore(repo_path):
 
     missing_entries = []
 
-    for expected_entry in COMMON_GITIGNORE_ENTRIES:
-        if not has_gitignore_entry(entries, expected_entry):
-            missing_entries.append(f"Missing .gitignore entry: {expected_entry}")
+    for expected_entry in expected_gitignore_entries(files):
+        is_directory = expected_entry.endswith("/")
+
+        if has_gitignore_entry(entries, expected_entry) or is_path_ignored(
+            entries, expected_entry.rstrip("/"), is_directory
+        ):
+            continue
+
+        missing_entries.append(f"Missing .gitignore entry: {expected_entry}")
 
     return missing_entries
 
@@ -299,12 +345,12 @@ def check_readme(repo_path):
 
 SEVERITIES = ["critical", "warning", "info"]
 SEVERITY_PENALTIES = {"critical": 25, "warning": 8, "info": 2}
+SCORE_MAX_REPEATS = 3
 LARGE_FILE_WARNING_BYTES = 50 * 1024 * 1024
 LARGE_FILE_LIMIT_BYTES = 100 * 1024 * 1024
 MAX_SCANNED_FILE_BYTES = 2 * 1024 * 1024
 AGENT_FILE_NAMES = ["agents.md", "claude.md"]
 AGENT_FILE_MAX_LINES = 300
-ENV_EXAMPLE_NAMES = [".env.example", ".env.sample", ".env.template", ".env.dist"]
 LICENSE_FILE_NAMES = ["license", "license.md", "license.txt", "copying", "unlicense"]
 INLINE_IGNORE_MARKER = "repodx:ignore"
 
@@ -323,8 +369,9 @@ SECRET_PATTERNS = [
     ("Groq API key", r"\bgsk_[A-Za-z0-9]{48,}\b"),
     ("SendGrid API key", r"\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b"),
     ("Telegram bot token", r"\b\d{8,10}:AA[A-Za-z0-9_\-]{33}\b"),
-    ("Private key", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----"),
 ]
+PRIVATE_KEY_PATTERN = r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----"
+PRIVATE_KEY_MIN_BODY_CHARS = 64
 GOOGLE_API_KEY_PATTERN = r"\bAIza[0-9A-Za-z_\-]{35}\b"
 JWT_PATTERN = r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"
 DATABASE_URL_PATTERN = (
@@ -334,9 +381,29 @@ DATABASE_URL_PATTERN = (
 ENV_USAGE_PATTERN = r"process\.env\.|import\.meta\.env\.|os\.environ|os\.getenv\(|Deno\.env\.get"  # repodx:ignore
 LOCAL_HOSTS = ["localhost", "127.0.0.1", "0.0.0.0", "db", "postgres", "mysql", "redis", "mongo"]
 PLACEHOLDER_PASSWORDS = ["password", "passwd", "pass", "secret", "changeme", "admin", "root", "test", "postgres"]
-PLACEHOLDER_MARKERS = ["example", "xxx", "your", "<", "${", "{{", "***", "..."]
+FAKE_VALUE_MARKERS = [
+    "example", "xxxx", "your", "dummy", "fake", "placeholder", "sample", "abcdefgh", "12345678",
+    "<", "[", "*", "{{", "${", "...",
+]
+PASSWORD_PLACEHOLDER_MARKERS = ["$", "%", "..", "password"]
+TEMPLATE_HOST_MARKERS = ["{", "<", "[", "$"]
+PUBLIC_ENV_PREFIXES = ("NEXT_PUBLIC_", "VITE_", "REACT_APP_", "PUBLIC_", "EXPO_PUBLIC_", "NUXT_PUBLIC_", "GATSBY_")
+TEST_DIRECTORY_NAMES = [
+    "test", "tests", "__tests__", "spec", "specs", "fixtures", "__fixtures__", "testdata", "__mocks__", "mocks",
+    "example", "examples", "demo", "demos", "samples",
+]
+TEST_FILE_PATTERN = r"(^test_.*\.py$|_test\.(py|go)$|\.(test|spec)\.[cm]?[jt]sx?$)"
 
 COMPILED_SECRET_PATTERNS = [(name, re.compile(pattern)) for name, pattern in SECRET_PATTERNS]
+# Every pattern above contains one of these strings, so lines without them are skipped quickly.
+CANDIDATE_LITERALS = [
+    "sk-", "AKIA", "ASIA", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "_live_", "sb_secret_",
+    "xox", "hf_", "gsk_", "SG.", ":AA", "AIza", "eyJ", "://",
+]
+
+
+def has_candidate(text):
+    return any(literal in text for literal in CANDIDATE_LITERALS)
 
 FIXES = {
     "secret": (
@@ -362,7 +429,7 @@ FIXES = {
         "Without RLS, anyone with your public anon key can read and change every row."
     ),
     "firebase-rules": (
-        "Replace `if true` / `true` with rules that check `request.auth` (for example "
+        "Make sure public access is intended. For private data, replace `if true` / `true` with rules that check `request.auth` (for example "
         "`allow read, write: if request.auth != null && request.auth.uid == userId;`)."
     ),
     "env-file": (
@@ -438,9 +505,36 @@ def decode_jwt_payload(token):
         return None
 
 
-def is_placeholder(value):
+def looks_fake(value):
+    """Documentation and test values: example markers, long repeated characters, obvious sequences."""
     lowered = value.lower()
-    return lowered in PLACEHOLDER_PASSWORDS or any(marker in lowered for marker in PLACEHOLDER_MARKERS)
+
+    if any(marker in lowered for marker in FAKE_VALUE_MARKERS):
+        return True
+
+    if re.search(r"(.)\1{5,}", value):
+        return True
+
+    # Values such as 111222333aaabbbccc.
+    return len(re.findall(r"(.)\1\1", value)) >= 3
+
+
+def is_placeholder_password(value):
+    lowered = value.lower()
+
+    if lowered in PLACEHOLDER_PASSWORDS or looks_fake(value):
+        return True
+
+    return any(marker in value for marker in PASSWORD_PLACEHOLDER_MARKERS)
+
+
+def is_test_path(relative_text):
+    parts = relative_text.lower().split("/")
+
+    if any(part in TEST_DIRECTORY_NAMES for part in parts[:-1]):
+        return True
+
+    return re.search(TEST_FILE_PATTERN, parts[-1]) is not None
 
 
 def scan_line_for_secrets(line):
@@ -449,26 +543,54 @@ def scan_line_for_secrets(line):
 
     for name, pattern in COMPILED_SECRET_PATTERNS:
         for match in pattern.finditer(line):
-            hits.append(("secret", "critical", name, match.group(0)))
+            if not looks_fake(match.group(0)):
+                hits.append(("secret", "critical", name, match.group(0)))
 
     for match in re.finditer(GOOGLE_API_KEY_PATTERN, line):
-        hits.append(("google-api-key", "warning", "Google API key", match.group(0)))
+        if not looks_fake(match.group(0)):
+            hits.append(("google-api-key", "warning", "Google API key", match.group(0)))
 
     for match in re.finditer(JWT_PATTERN, line):
         payload = decode_jwt_payload(match.group(0))
 
-        if isinstance(payload, dict) and payload.get("role") == "service_role":
+        # "supabase-demo" keys are the public defaults of the local Supabase CLI.
+        if (
+            isinstance(payload, dict)
+            and payload.get("role") == "service_role"
+            and payload.get("iss") != "supabase-demo"
+        ):
             hits.append(("supabase-service-role", "critical", "Supabase service_role key", match.group(0)))
 
     for match in re.finditer(DATABASE_URL_PATTERN, line):
         user, password, host = match.groups()
 
-        if host.lower() in LOCAL_HOSTS or is_placeholder(password):
+        if host.lower() in LOCAL_HOSTS or is_placeholder_password(password):
+            continue
+
+        if any(marker in host + user for marker in TEMPLATE_HOST_MARKERS):
             continue
 
         hits.append(("database-url", "critical", "Database URL with password", password))
 
     return hits
+
+
+def find_private_keys(text):
+    """Yield line numbers of private key headers followed by a real key body, not a `...` template."""
+    for match in re.finditer(PRIVATE_KEY_PATTERN, text):
+        following = text[match.end():match.end() + 400]
+        body = re.match(r"(?:\\n|\\r|[\s\"'>*]|[A-Za-z0-9+/=])*", following).group(0)
+        body = re.sub(r"\\[nr]", "", body)
+
+        if len(re.findall(r"[A-Za-z0-9+/=]", body)) >= PRIVATE_KEY_MIN_BODY_CHARS:
+            yield text.count("\n", 0, match.start()) + 1
+
+
+def secret_severity_and_title(relative_text, severity, title):
+    if severity == "critical" and is_test_path(relative_text):
+        return "warning", f"{title} in a test or example file"
+
+    return severity, title
 
 
 def check_file_contents(repo_path, files):
@@ -481,44 +603,70 @@ def check_file_contents(repo_path, files):
         if text is None:
             continue
 
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            if INLINE_IGNORE_MARKER in line:
+        lines = text.splitlines()
+        hits = []
+
+        if "PRIVATE KEY-----" in text:
+            for line_number in find_private_keys(text):
+                hits.append((line_number, "secret", "critical", "Private key", lines[line_number - 1].strip()))
+
+        needs_env_scan = not uses_env_variables and re.search(ENV_USAGE_PATTERN, text)
+
+        if has_candidate(text) or needs_env_scan:
+            for line_number, line in enumerate(lines, start=1):
+                if INLINE_IGNORE_MARKER in line:
+                    continue
+
+                if not uses_env_variables and re.search(ENV_USAGE_PATTERN, line):
+                    uses_env_variables = True
+
+                if has_candidate(line):
+                    for check_id, severity, title, secret_text in scan_line_for_secrets(line):
+                        hits.append((line_number, check_id, severity, title, secret_text))
+
+        for line_number, check_id, severity, title, secret_text in hits:
+            if INLINE_IGNORE_MARKER in lines[line_number - 1]:
                 continue
 
-            if not uses_env_variables and re.search(ENV_USAGE_PATTERN, line):
-                uses_env_variables = True
-
-            for check_id, severity, title, secret_text in scan_line_for_secrets(line):
-                findings.append(
-                    make_finding(
-                        check_id,
-                        severity,
-                        title,
-                        relative_text,
-                        line_number,
-                        mask_secret(secret_text),
-                    )
-                )
+            severity, title = secret_severity_and_title(relative_text, severity, title)
+            findings.append(
+                make_finding(check_id, severity, title, relative_text, line_number, mask_secret(secret_text))
+            )
 
     names = {relative_text.rsplit("/", 1)[-1].lower() for relative_text in files}
 
-    if uses_env_variables and not names.intersection(ENV_EXAMPLE_NAMES):
+    if uses_env_variables and not any(is_env_example_name(name) for name in names):
         findings.append(make_finding("env-example", "info", "No .env.example file"))
 
     return findings
 
 
-def check_env_files(files):
+def is_env_example_name(name):
+    return name.startswith(".env") and any(word in name for word in ["example", "sample", "template", "dist"])
+
+
+def has_only_public_variables(path):
+    """True when every variable uses a prefix that frameworks expose to the browser anyway."""
+    text = read_text_file(path) or ""
+    names = re.findall(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", text, flags=re.MULTILINE)
+    return bool(names) and all(name.startswith(PUBLIC_ENV_PREFIXES) for name in names)
+
+
+def check_env_files(repo_path, files):
     findings = []
 
     for relative_text in files:
         name = relative_text.rsplit("/", 1)[-1].lower()
 
-        if not re.fullmatch(r"\.env(\..+)?", name) or name in ENV_EXAMPLE_NAMES:
+        if not re.fullmatch(r"\.env(\..+)?", name) or is_env_example_name(name):
             continue
 
         # Frameworks such as Next.js commit .env.development/.env.production on purpose.
-        if name == ".env" or name.endswith(".local"):
+        if (
+            (name == ".env" or name.endswith(".local"))
+            and not is_test_path(relative_text)
+            and not has_only_public_variables(repo_path / relative_text)
+        ):
             findings.append(
                 make_finding("env-file", "critical", "Environment file is not ignored", relative_text)
             )
@@ -607,6 +755,25 @@ def check_supabase_rls(repo_path, files):
     ]
 
 
+def public_firebase_access(code):
+    """Return "write", "read" or None for one line of Firebase rules."""
+    for match in re.finditer(r"\ballow\s+([\w\s,]+?)\s*:\s*if\s+true\s*;", code):
+        operations = re.split(r"[\s,]+", match.group(1).strip())
+
+        if set(operations) & {"write", "create", "update", "delete"}:
+            return "write"
+
+        return "read"
+
+    if re.search(r"\"\.write\"\s*:\s*(true|\"true\")", code):
+        return "write"
+
+    if re.search(r"\"\.read\"\s*:\s*(true|\"true\")", code):
+        return "read"
+
+    return None
+
+
 def check_firebase_rules(repo_path, files):
     findings = []
 
@@ -619,14 +786,18 @@ def check_firebase_rules(repo_path, files):
         text = read_text_file(repo_path / relative_text) or ""
 
         for line_number, line in enumerate(text.splitlines(), start=1):
-            code = line.split("//", 1)[0]
+            access = public_firebase_access(line.split("//", 1)[0])
 
-            if re.search(r"\ballow\b[^;]*:\s*if\s+true\s*;", code) or re.search(
-                r"\"\.(read|write)\"\s*:\s*(true|\"true\")", code
-            ):
+            if access == "write":
                 findings.append(
                     make_finding(
-                        "firebase-rules", "critical", "Firebase rules allow public access", relative_text, line_number
+                        "firebase-rules", "critical", "Firebase rules allow public writes", relative_text, line_number
+                    )
+                )
+            elif access == "read":
+                findings.append(
+                    make_finding(
+                        "firebase-rules", "info", "Firebase rules allow public reads", relative_text, line_number
                     )
                 )
 
@@ -662,10 +833,10 @@ def check_agent_files(repo_path, files):
     return findings
 
 
-def hygiene_findings(repo_path, junk_items):
+def hygiene_findings(repo_path, junk_items, files):
     findings = [make_finding("junk", "warning", "Junk committed to the repo", item) for item in junk_items]
 
-    for issue in check_gitignore(repo_path):
+    for issue in check_gitignore(repo_path, files):
         prefix = "Missing .gitignore entry: "
 
         if issue.startswith(prefix):
@@ -692,11 +863,11 @@ def build_report(repo_path):
     junk_items, files = scan_tree(repo_path)
     findings = []
     findings += check_file_contents(repo_path, files)
-    findings += check_env_files(files)
+    findings += check_env_files(repo_path, files)
     findings += check_supabase_rls(repo_path, files)
     findings += check_firebase_rules(repo_path, files)
     findings += check_large_files(repo_path, files)
-    findings += hygiene_findings(repo_path, junk_items)
+    findings += hygiene_findings(repo_path, junk_items, files)
     findings += check_license(repo_path)
     findings += check_agent_files(repo_path, files)
 
@@ -706,7 +877,7 @@ def build_report(repo_path):
     for finding in findings:
         counts[finding["severity"]] += 1
 
-    score = max(0, 100 - sum(SEVERITY_PENALTIES[severity] * count for severity, count in counts.items()))
+    score = score_findings(findings)
 
     return {
         "path": str(repo_path),
@@ -717,6 +888,20 @@ def build_report(repo_path):
         "files_scanned": len(files),
         "findings": findings,
     }
+
+
+def score_findings(findings):
+    """Start at 100 and subtract per finding, counting each kind of problem at most three times."""
+    per_kind = {}
+
+    for finding in findings:
+        key = (finding["id"], finding["severity"])
+        per_kind[key] = per_kind.get(key, 0) + 1
+
+    penalty = sum(
+        SEVERITY_PENALTIES[severity] * min(count, SCORE_MAX_REPEATS) for (_check_id, severity), count in per_kind.items()
+    )
+    return max(0, 100 - penalty)
 
 
 def grade_for_score(score):

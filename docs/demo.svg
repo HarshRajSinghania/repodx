@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="632" viewBox="0 0 900 632" role="img" aria-label="RepoDx terminal output">
+<rect width="900" height="632" rx="10" fill="#0d1117"/>
+<circle cx="22" cy="20" r="6" fill="#ff5f56"/><circle cx="42" cy="20" r="6" fill="#ffbd2e"/><circle cx="62" cy="20" r="6" fill="#27c93f"/>
+<text x="450.0" y="25" fill="#8b949e" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" text-anchor="middle">repodx</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14" xml:space="preserve" style="white-space:pre">
+<text x="20" y="52" fill="#8be9fd">$ repodx sample_repo</text>
+<text x="20" y="72" fill="#e6edf3">RepoDx report</text>
+<text x="20" y="92" fill="#e6edf3">Scanned path: sample_repo (8 files)</text>
+<text x="20" y="112" fill="#ff6b6b" font-weight="bold">Score: 0/100 (F)</text>
+<text x="20" y="132" fill="#e6edf3">Found: 3 critical, 7 warnings, 3 info</text>
+<text x="20" y="152" fill="#e6edf3"></text>
+<text x="20" y="172" fill="#ff6b6b" font-weight="bold">[CRITICAL] Database URL with password</text>
+<text x="20" y="192" fill="#e6edf3">&#160;&#160;- app.js:2  (hunter...7v)</text>
+<text x="20" y="212" fill="#9aa5b1">&#160;&#160;Fix: Move the connection string into an ignored .env file and change the database password:</text>
+<text x="20" y="232" fill="#9aa5b1">&#160;&#160;&#160;&#160;&#160;&#160;&#160;anyone who can read the repo can log in to your database.</text>
+<text x="20" y="252" fill="#e6edf3"></text>
+<text x="20" y="272" fill="#ff6b6b" font-weight="bold">[CRITICAL] Environment file is not ignored</text>
+<text x="20" y="292" fill="#e6edf3">&#160;&#160;- .env</text>
+<text x="20" y="312" fill="#9aa5b1">&#160;&#160;Fix: Add `.env*` and `!.env.example` to .gitignore, run `git rm --cached &lt;file&gt;`, and rotate</text>
+<text x="20" y="332" fill="#9aa5b1">&#160;&#160;&#160;&#160;&#160;&#160;&#160;any secret it contained. Commit a `.env.example` with empty values instead.</text>
+<text x="20" y="352" fill="#e6edf3"></text>
+<text x="20" y="372" fill="#ff6b6b" font-weight="bold">[CRITICAL] Firebase rules allow public writes</text>
+<text x="20" y="392" fill="#e6edf3">&#160;&#160;- firestore.rules:5</text>
+<text x="20" y="412" fill="#9aa5b1">&#160;&#160;Fix: Make sure public access is intended. For private data, replace `if true` / `true` with</text>
+<text x="20" y="432" fill="#9aa5b1">&#160;&#160;&#160;&#160;&#160;&#160;&#160;rules that check `request.auth` (for example `allow read, write: if request.auth != null &amp;&amp;</text>
+<text x="20" y="452" fill="#9aa5b1">&#160;&#160;&#160;&#160;&#160;&#160;&#160;request.auth.uid == userId;`).</text>
+<text x="20" y="472" fill="#e6edf3"></text>
+<text x="20" y="492" fill="#f7c948" font-weight="bold">[WARNING] Supabase table without Row Level Security</text>
+<text x="20" y="512" fill="#e6edf3">&#160;&#160;- supabase/migrations/001_init.sql  (profiles)</text>
+<text x="20" y="532" fill="#9aa5b1">&#160;&#160;Fix: Add `alter table &lt;name&gt; enable row level security;` and write policies for each table.</text>
+<text x="20" y="552" fill="#9aa5b1">&#160;&#160;&#160;&#160;&#160;&#160;&#160;Without RLS, anyone with your public anon key can read and change every row.</text>
+<text x="20" y="572" fill="#e6edf3"></text>
+<text x="20" y="592" fill="#e6edf3">&#160;&#160;...</text>
+</g>
+</svg>
