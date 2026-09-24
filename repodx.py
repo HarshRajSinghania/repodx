@@ -11,7 +11,7 @@ import re
 import sys
 
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 COMMON_GITIGNORE_ENTRIES = ["__pycache__/", ".env", "node_modules/"]
 VIRTUAL_ENVIRONMENT_DIRECTORY_NAMES = [".venv", "venv", "env"]
