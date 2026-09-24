@@ -41,5 +41,6 @@ python3 repodx.py .   # the repo must keep scoring 100
    versions in `README.md`, and add a section to `CHANGELOG.md`.
 2. Merge to `main`, then either push a tag (`git tag v0.4.0 && git push origin v0.4.0`)
    or run the `release` workflow from the Actions tab, which tags `main` for you.
-3. The `release` workflow runs the tests, checks the tag matches the version, and
-   publishes a GitHub release with `repodx.py` attached.
+3. The `release` workflow runs the tests, checks the tag matches the version,
+   publishes a GitHub release with `repodx.py` attached, and publishes the same
+   version to PyPI using trusted publishing.

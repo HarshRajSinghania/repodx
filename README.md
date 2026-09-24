@@ -21,13 +21,21 @@ language how to fix each problem.
 
 ## Installation
 
+Install from PyPI with an isolated tool manager:
+
+```bash
+pipx install repodx
+# or
+uv tool install repodx
+```
+
 Run it once without installing anything (Python 3.9+ is the only requirement):
 
 ```bash
 curl -sSL https://github.com/omerbek/repodx/releases/latest/download/repodx.py | python3 - .
 ```
 
-Install it as a command:
+Install the tagged GitHub version directly:
 
 ```bash
 pipx install git+https://github.com/omerbek/repodx@v0.3.0
