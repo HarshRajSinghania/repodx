@@ -6,10 +6,17 @@ It scans a local folder and reports a few common cleanup issues:
 
 - temporary files such as `.tmp` and `.log`
 - Python cache folders such as `__pycache__/`
+- Python virtual environments (`.venv/`, `venv/`, `env/` folders that
+  contain a `pyvenv.cfg`)
 - `.DS_Store`
-- `node_modules/` when it is not ignored
+- `node_modules/`
 - missing or incomplete `.gitignore`
-- missing README installation and usage sections
+- missing README installation and usage sections (`README.md`, `README.rst`,
+  `README.txt` or `README`, in any letter case)
+
+Files and folders that your `.gitignore` already ignores are not reported.
+Junk folders are reported once and are not scanned inside, so large
+`node_modules/` folders do not slow the scan down.
 
 RepoDx is intentionally small. It does not try to compete with larger audit
 tools that run dozens or hundreds of checks. The goal is a fast, readable
@@ -67,11 +74,10 @@ Example output:
 ```text
 RepoDx report
 Scanned path: C:\Users\omer\Desktop\githubprojem\sample_repo
-Issues found: 9
+Issues found: 8
 
 Junk files
   - __pycache__/
-  - cache.tmp
   - debug.log
   - node_modules/
 
@@ -103,7 +109,8 @@ get wrong and is outside the first release.
 ## Development
 
 The `sample_repo/` folder is intentionally broken. It is used by tests and by
-the example report above.
+the example report above. Its `.gitignore` ignores `*.tmp`, so `cache.tmp` is
+not reported.
 
 Run the test suite:
 

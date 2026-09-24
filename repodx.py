@@ -1,11 +1,14 @@
 import argparse
+import fnmatch
+import os
 from pathlib import Path
 import re
 
 
 COMMON_GITIGNORE_ENTRIES = ["__pycache__/", ".env", "node_modules/"]
-JUNK_DIRECTORY_NAMES = ["__pycache__", "node_modules", ".venv", "venv", "env"]
 VIRTUAL_ENVIRONMENT_DIRECTORY_NAMES = [".venv", "venv", "env"]
+JUNK_FILE_SUFFIXES = [".tmp", ".log"]
+README_FILE_NAMES = ["readme.md", "readme.markdown", "readme.rst", "readme.txt", "readme"]
 README_INSTALLATION_HEADINGS = ["installation", "install", "kurulum"]
 README_USAGE_HEADINGS = ["usage", "use", "kullanim", "kullanım"]
 
@@ -59,6 +62,37 @@ def has_gitignore_entry(entries, expected_entry):
     return False
 
 
+def is_file_ignored(entries, relative_text):
+    if not entries:
+        return False
+
+    file_name = relative_text.rsplit("/", 1)[-1].lower()
+    relative_text = relative_text.lower()
+    ignored = False
+
+    # Later entries win, so a "!pattern" can re-include an earlier match.
+    for entry in entries:
+        negated = entry.startswith("!")
+        pattern = entry.removeprefix("!").removeprefix("**/").lstrip("/").lower()
+
+        if not pattern or pattern.endswith("/"):
+            continue
+
+        if "/" in pattern:
+            matched = fnmatch.fnmatchcase(relative_text, pattern)
+        else:
+            matched = fnmatch.fnmatchcase(file_name, pattern)
+
+        if matched:
+            ignored = not negated
+
+    return ignored
+
+
+def is_virtual_environment(path):
+    return (path / "pyvenv.cfg").is_file()
+
+
 def find_junk_files(repo_path):
     entries, _ = read_gitignore_entries(repo_path)
     pycache_is_ignored = has_gitignore_entry(entries, "__pycache__/")
@@ -70,38 +104,49 @@ def find_junk_files(repo_path):
     ]
     junk_items = []
 
-    for path in repo_path.rglob("*"):
-        relative_path = path.relative_to(repo_path)
-        relative_text = relative_path.as_posix()
+    for current_dir, dir_names, file_names in os.walk(repo_path):
+        current_path = Path(current_dir)
+        kept_dir_names = []
 
-        if ".git" in relative_path.parts:
-            continue
+        for dir_name in dir_names:
+            dir_path = current_path / dir_name
+            relative_text = dir_path.relative_to(repo_path).as_posix()
 
-        if any(part in JUNK_DIRECTORY_NAMES for part in relative_path.parts[:-1]):
-            continue
+            if dir_name == ".git":
+                continue
 
-        if path.is_dir() and path.name == "__pycache__" and not pycache_is_ignored:
-            junk_items.append(relative_text + "/")
-            continue
+            # Junk folders are reported once and never walked into.
+            if dir_name == "__pycache__":
+                if not pycache_is_ignored:
+                    junk_items.append(relative_text + "/")
+                continue
 
-        if path.is_dir() and path.name == "node_modules" and not node_modules_is_ignored:
-            junk_items.append(relative_text + "/")
-            continue
+            if dir_name == "node_modules":
+                if not node_modules_is_ignored:
+                    junk_items.append(relative_text + "/")
+                continue
 
-        if (
-            path.is_dir()
-            and path.name in VIRTUAL_ENVIRONMENT_DIRECTORY_NAMES
-            and path.name not in ignored_virtual_environment_names
-        ):
-            junk_items.append(relative_text + "/")
-            continue
+            if (
+                dir_name in VIRTUAL_ENVIRONMENT_DIRECTORY_NAMES
+                and is_virtual_environment(dir_path)
+            ):
+                if dir_name not in ignored_virtual_environment_names:
+                    junk_items.append(relative_text + "/")
+                continue
 
-        if path.is_file() and path.name == ".DS_Store":
-            junk_items.append(relative_text)
-            continue
+            kept_dir_names.append(dir_name)
 
-        if path.is_file() and path.suffix in [".tmp", ".log"]:
-            junk_items.append(relative_text)
+        dir_names[:] = kept_dir_names
+
+        for file_name in file_names:
+            relative_text = (current_path / file_name).relative_to(repo_path).as_posix()
+            is_junk = (
+                file_name == ".DS_Store"
+                or os.path.splitext(file_name)[1].lower() in JUNK_FILE_SUFFIXES
+            )
+
+            if is_junk and not is_file_ignored(entries, relative_text):
+                junk_items.append(relative_text)
 
     return sorted(junk_items)
 
@@ -145,7 +190,7 @@ def markdown_headings(markdown_text):
             previous_text_line = None
             continue
 
-        match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+        match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)(?:\s+#+)?\s*$", line)
 
         if match:
             headings.append(match.group(1).strip().lower())
@@ -167,18 +212,50 @@ def has_any_heading(headings, expected_headings):
     return False
 
 
-def check_readme(repo_path):
-    readme_path = repo_path / "README.md"
+def rst_headings(rst_text):
+    headings = []
+    previous_text_line = None
 
-    if not readme_path.exists():
-        return ["Missing README.md file"]
+    for line in rst_text.splitlines():
+        stripped_line = line.strip()
+
+        if re.match(r"^([=\-~^\"'`*+#:.])\1+\s*$", line):
+            if previous_text_line:
+                headings.append(previous_text_line.lower())
+            previous_text_line = None
+            continue
+
+        previous_text_line = stripped_line or None
+
+    return headings
+
+
+def find_readme(repo_path):
+    names = {path.name.lower(): path for path in repo_path.iterdir() if path.is_file()}
+
+    for readme_name in README_FILE_NAMES:
+        if readme_name in names:
+            return names[readme_name]
+
+    return None
+
+
+def check_readme(repo_path):
+    readme_path = find_readme(repo_path)
+
+    if readme_path is None:
+        return ["Missing README file"]
 
     try:
         readme_text = readme_path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError) as error:
-        return [f"Could not read README.md: {error}"]
+        return [f"Could not read {readme_path.name}: {error}"]
 
-    headings = markdown_headings(readme_text)
+    if readme_path.suffix.lower() == ".rst":
+        headings = rst_headings(readme_text)
+    else:
+        headings = markdown_headings(readme_text)
+
     issues = []
 
     if not has_any_heading(headings, README_INSTALLATION_HEADINGS):

@@ -80,9 +80,11 @@ class RepoDxTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_path = Path(temp_dir)
             (repo_path / ".gitignore").write_text(".env\n", encoding="utf-8")
-            (repo_path / ".venv").mkdir()
-            (repo_path / "venv").mkdir()
-            (repo_path / "env").mkdir()
+            for name in [".venv", "venv", "env"]:
+                (repo_path / name).mkdir()
+                (repo_path / name / "pyvenv.cfg").write_text(
+                    "home = /usr/bin\n", encoding="utf-8"
+                )
 
             result = repodx.find_junk_files(repo_path)
 
@@ -94,9 +96,11 @@ class RepoDxTests(unittest.TestCase):
             (repo_path / ".gitignore").write_text(
                 ".venv/\nvenv/\nenv/\n", encoding="utf-8"
             )
-            (repo_path / ".venv").mkdir()
-            (repo_path / "venv").mkdir()
-            (repo_path / "env").mkdir()
+            for name in [".venv", "venv", "env"]:
+                (repo_path / name).mkdir()
+                (repo_path / name / "pyvenv.cfg").write_text(
+                    "home = /usr/bin\n", encoding="utf-8"
+                )
 
             result = repodx.find_junk_files(repo_path)
 
@@ -131,6 +135,82 @@ class RepoDxTests(unittest.TestCase):
             result = repodx.find_junk_files(repo_path)
 
             self.assertEqual(result, ["__pycache__/", "node_modules/"])
+
+    def test_find_junk_files_ignores_env_folders_that_are_not_virtualenvs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / ".gitignore").write_text(".env\n", encoding="utf-8")
+            (repo_path / "env").mkdir()
+            (repo_path / "env" / "production.yaml").write_text(
+                "debug: false\n", encoding="utf-8"
+            )
+            (repo_path / "env" / "deploy.log").write_text("log", encoding="utf-8")
+
+            result = repodx.find_junk_files(repo_path)
+
+            self.assertEqual(result, ["env/deploy.log"])
+
+    def test_find_junk_files_skips_files_ignored_by_gitignore_patterns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / ".gitignore").write_text(
+                "*.log\n**/*.tmp\n.DS_Store\n", encoding="utf-8"
+            )
+            (repo_path / "debug.log").write_text("log", encoding="utf-8")
+            (repo_path / "src").mkdir()
+            (repo_path / "src" / "cache.tmp").write_text("tmp", encoding="utf-8")
+            (repo_path / "src" / ".DS_Store").write_text("mac", encoding="utf-8")
+
+            result = repodx.find_junk_files(repo_path)
+
+            self.assertEqual(result, [])
+
+    def test_find_junk_files_respects_gitignore_negation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / ".gitignore").write_text(
+                "*.log\n!keep/**\n", encoding="utf-8"
+            )
+            (repo_path / "debug.log").write_text("log", encoding="utf-8")
+            (repo_path / "keep").mkdir()
+            (repo_path / "keep" / "trace.log").write_text("log", encoding="utf-8")
+
+            result = repodx.find_junk_files(repo_path)
+
+            self.assertEqual(result, ["keep/trace.log"])
+
+    def test_find_junk_files_matches_suffixes_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / ".gitignore").write_text(".env\n", encoding="utf-8")
+            (repo_path / "DEBUG.LOG").write_text("log", encoding="utf-8")
+            (repo_path / "Cache.Tmp").write_text("tmp", encoding="utf-8")
+
+            result = repodx.find_junk_files(repo_path)
+
+            self.assertEqual(result, ["Cache.Tmp", "DEBUG.LOG"])
+
+    def test_find_junk_files_does_not_walk_into_junk_directories(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / ".gitignore").write_text(
+                "node_modules/\n", encoding="utf-8"
+            )
+            (repo_path / "node_modules" / "pkg").mkdir(parents=True)
+            visited = []
+            real_walk = repodx.os.walk
+
+            def recording_walk(top):
+                for current_dir, dir_names, file_names in real_walk(top):
+                    visited.append(Path(current_dir).name)
+                    yield current_dir, dir_names, file_names
+
+            with mock.patch.object(repodx.os, "walk", recording_walk):
+                result = repodx.find_junk_files(repo_path)
+
+            self.assertEqual(result, [])
+            self.assertNotIn("node_modules", visited)
+            self.assertNotIn("pkg", visited)
 
     def test_check_gitignore_reports_missing_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -265,6 +345,49 @@ class RepoDxTests(unittest.TestCase):
 
             self.assertEqual(result, [])
 
+    def test_check_readme_accepts_closed_atx_headings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / "README.md").write_text(
+                "# Project #\n\n## Installation ##\n\n## Usage ##\n",
+                encoding="utf-8",
+            )
+
+            result = repodx.check_readme(repo_path)
+
+            self.assertEqual(result, [])
+
+    def test_check_readme_accepts_lowercase_file_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / "readme.md").write_text(
+                "# Project\n\n## Installation\n\n## Usage\n", encoding="utf-8"
+            )
+
+            result = repodx.check_readme(repo_path)
+
+            self.assertEqual(result, [])
+
+    def test_check_readme_accepts_rst_readme(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / "README.rst").write_text(
+                "Project\n=======\n\nInstallation\n~~~~~~~~~~~~\n\nUsage\n^^^^^\n",
+                encoding="utf-8",
+            )
+
+            result = repodx.check_readme(repo_path)
+
+            self.assertEqual(result, [])
+
+    def test_check_readme_reports_missing_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+
+            result = repodx.check_readme(repo_path)
+
+            self.assertEqual(result, ["Missing README file"])
+
     def test_check_readme_reports_unreadable_file(self):
         repo_path = SAMPLE_DIR / "bad_readme_repo"
 
@@ -375,7 +498,6 @@ class RepoDxTests(unittest.TestCase):
             {
                 "junk_items": [
                     "__pycache__/",
-                    "cache.tmp",
                     "debug.log",
                     "node_modules/",
                 ],
