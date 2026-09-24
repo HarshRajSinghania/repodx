@@ -1,0 +1,25 @@
+name: RepoDx
+description: Check a repo for leaked secrets, unsafe Supabase/Firebase config and committed junk.
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  path:
+    description: Folder to scan.
+    default: "."
+  fail-on:
+    description: Fail the job on findings of this severity or worse (critical, warning, info, never).
+    default: warning
+
+runs:
+  using: composite
+  steps:
+    - name: Run RepoDx
+      shell: bash
+      env:
+        REPODX_PATH: ${{ inputs.path }}
+        REPODX_FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        python3 "$GITHUB_ACTION_PATH/repodx.py" "$REPODX_PATH" --format markdown --fail-on never >> "$GITHUB_STEP_SUMMARY"
+        python3 "$GITHUB_ACTION_PATH/repodx.py" "$REPODX_PATH" --fail-on "$REPODX_FAIL_ON"
