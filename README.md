@@ -24,15 +24,15 @@ language how to fix each problem.
 Run it once without installing anything (Python 3.9+ is the only requirement):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/omerbek/repodx/main/repodx.py | python3 - .
+curl -sSL https://github.com/omerbek/repodx/releases/latest/download/repodx.py | python3 - .
 ```
 
 Install it as a command:
 
 ```bash
-pipx install git+https://github.com/omerbek/repodx
+pipx install git+https://github.com/omerbek/repodx@v0.3.0
 # or
-uv tool install git+https://github.com/omerbek/repodx
+uv tool install git+https://github.com/omerbek/repodx@v0.3.0
 ```
 
 On Windows, you can also download `repodx.py` and run `python repodx.py .`
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: omerbek/repodx@main
+      - uses: omerbek/repodx@v0.3.0
         with:
           fail-on: warning # critical, warning, info or never
 ```
@@ -76,7 +76,7 @@ problems.
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/omerbek/repodx
-    rev: main
+    rev: v0.3.0
     hooks:
       - id: repodx
 ```
