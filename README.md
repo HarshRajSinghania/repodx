@@ -38,9 +38,9 @@ curl -sSL https://github.com/omerbek/repodx/releases/latest/download/repodx.py |
 Install the tagged GitHub version directly:
 
 ```bash
-pipx install git+https://github.com/omerbek/repodx@v0.3.0
+pipx install git+https://github.com/omerbek/repodx@v0.3.1
 # or
-uv tool install git+https://github.com/omerbek/repodx@v0.3.0
+uv tool install git+https://github.com/omerbek/repodx@v0.3.1
 ```
 
 On Windows, you can also download `repodx.py` and run `python repodx.py .`
@@ -70,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: omerbek/repodx@v0.3.0
+      - uses: omerbek/repodx@v0.3.1
         with:
           fail-on: warning # critical, warning, info or never
 ```
@@ -84,7 +84,7 @@ problems.
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/omerbek/repodx
-    rev: v0.3.0
+    rev: v0.3.1
     hooks:
       - id: repodx
 ```

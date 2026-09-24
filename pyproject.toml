@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repodx"
-version = "0.3.0"
+version = "0.3.1"
 description = "Check your AI-built project for leaked secrets, unsafe Supabase/Firebase config and committed junk before you push."
 readme = "README.md"
 license = { text = "MIT" }
