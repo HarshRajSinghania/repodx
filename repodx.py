@@ -62,11 +62,11 @@ def has_gitignore_entry(entries, expected_entry):
     return False
 
 
-def is_file_ignored(entries, relative_text):
+def is_path_ignored(entries, relative_text, is_directory=False):
     if not entries:
         return False
 
-    file_name = relative_text.rsplit("/", 1)[-1].lower()
+    name = relative_text.rsplit("/", 1)[-1].lower()
     relative_text = relative_text.lower()
     ignored = False
 
@@ -74,14 +74,25 @@ def is_file_ignored(entries, relative_text):
     for entry in entries:
         negated = entry.startswith("!")
         pattern = entry.removeprefix("!").removeprefix("**/").lstrip("/").lower()
+        directory_only = pattern.endswith("/")
+        pattern = pattern.rstrip("/")
 
-        if not pattern or pattern.endswith("/"):
+        if not pattern or (directory_only and not is_directory):
             continue
 
-        if "/" in pattern:
-            matched = fnmatch.fnmatchcase(relative_text, pattern)
-        else:
-            matched = fnmatch.fnmatchcase(file_name, pattern)
+        candidates = [pattern]
+
+        # "node_modules/*" and "node_modules/**" are read as ignoring the folder.
+        if is_directory:
+            candidates.append(normalize_gitignore_directory_entry(pattern))
+
+        matched = False
+
+        for candidate in candidates:
+            target = relative_text if "/" in candidate else name
+
+            if candidate and fnmatch.fnmatchcase(target, candidate):
+                matched = True
 
         if matched:
             ignored = not negated
@@ -93,15 +104,15 @@ def is_virtual_environment(path):
     return (path / "pyvenv.cfg").is_file()
 
 
+def is_junk_directory(path):
+    if path.name in ["__pycache__", "node_modules"]:
+        return True
+
+    return path.name in VIRTUAL_ENVIRONMENT_DIRECTORY_NAMES and is_virtual_environment(path)
+
+
 def find_junk_files(repo_path):
     entries, _ = read_gitignore_entries(repo_path)
-    pycache_is_ignored = has_gitignore_entry(entries, "__pycache__/")
-    node_modules_is_ignored = has_gitignore_entry(entries, "node_modules/")
-    ignored_virtual_environment_names = [
-        name
-        for name in VIRTUAL_ENVIRONMENT_DIRECTORY_NAMES
-        if has_gitignore_entry(entries, name + "/")
-    ]
     junk_items = []
 
     for current_dir, dir_names, file_names in os.walk(repo_path):
@@ -115,23 +126,16 @@ def find_junk_files(repo_path):
             if dir_name == ".git":
                 continue
 
+            is_ignored = is_path_ignored(entries, relative_text, is_directory=True)
+
             # Junk folders are reported once and never walked into.
-            if dir_name == "__pycache__":
-                if not pycache_is_ignored:
+            if is_junk_directory(dir_path):
+                if not is_ignored:
                     junk_items.append(relative_text + "/")
                 continue
 
-            if dir_name == "node_modules":
-                if not node_modules_is_ignored:
-                    junk_items.append(relative_text + "/")
-                continue
-
-            if (
-                dir_name in VIRTUAL_ENVIRONMENT_DIRECTORY_NAMES
-                and is_virtual_environment(dir_path)
-            ):
-                if dir_name not in ignored_virtual_environment_names:
-                    junk_items.append(relative_text + "/")
+            # Git cannot track anything inside an ignored folder.
+            if is_ignored:
                 continue
 
             kept_dir_names.append(dir_name)
@@ -145,7 +149,7 @@ def find_junk_files(repo_path):
                 or os.path.splitext(file_name)[1].lower() in JUNK_FILE_SUFFIXES
             )
 
-            if is_junk and not is_file_ignored(entries, relative_text):
+            if is_junk and not is_path_ignored(entries, relative_text):
                 junk_items.append(relative_text)
 
     return sorted(junk_items)

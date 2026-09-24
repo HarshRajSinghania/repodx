@@ -212,6 +212,34 @@ class RepoDxTests(unittest.TestCase):
             self.assertNotIn("node_modules", visited)
             self.assertNotIn("pkg", visited)
 
+    def test_find_junk_files_respects_negated_directory_entries(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / ".gitignore").write_text(
+                "__pycache__/\nnode_modules/\n!fixtures/**\n", encoding="utf-8"
+            )
+            (repo_path / "__pycache__").mkdir()
+            (repo_path / "fixtures" / "__pycache__").mkdir(parents=True)
+            (repo_path / "fixtures" / "node_modules").mkdir()
+
+            result = repodx.find_junk_files(repo_path)
+
+            self.assertEqual(
+                result, ["fixtures/__pycache__/", "fixtures/node_modules/"]
+            )
+
+    def test_find_junk_files_skips_contents_of_ignored_directories(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+            (repo_path / "build").mkdir()
+            (repo_path / "build" / "output.log").write_text("log", encoding="utf-8")
+            (repo_path / "build" / "__pycache__").mkdir()
+
+            result = repodx.find_junk_files(repo_path)
+
+            self.assertEqual(result, [])
+
     def test_check_gitignore_reports_missing_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_path = Path(temp_dir)

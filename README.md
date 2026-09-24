@@ -15,6 +15,7 @@ It scans a local folder and reports a few common cleanup issues:
   `README.txt` or `README`, in any letter case)
 
 Files and folders that your `.gitignore` already ignores are not reported.
+`!` re-include rules are respected, and ignored folders are not scanned.
 Junk folders are reported once and are not scanned inside, so large
 `node_modules/` folders do not slow the scan down.
 
