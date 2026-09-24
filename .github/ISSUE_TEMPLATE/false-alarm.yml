@@ -1,0 +1,30 @@
+name: False alarm
+description: RepoDx reported something that is not a problem.
+labels: [false-positive]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: RepoDx version
+      description: Output of `repodx --version`.
+    validations:
+      required: true
+  - type: input
+    id: finding
+    attributes:
+      label: Finding title
+      placeholder: "[CRITICAL] OpenAI API key"
+    validations:
+      required: true
+  - type: textarea
+    id: line
+    attributes:
+      label: The line that triggered it
+      description: Replace any real secret with fake characters of the same shape. Never paste a real key.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is this not a problem?

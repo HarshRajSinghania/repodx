@@ -17,37 +17,7 @@ Bots find a leaked key within minutes.
 RepoDx scans your project folder, gives it a score, and tells you in plain
 language how to fix each problem.
 
-```text
-$ repodx sample_repo
-RepoDx report
-Scanned path: sample_repo (7 files)
-Score: 0/100 (F)
-Found: 3 critical, 8 warnings, 3 info
-
-[CRITICAL] Database URL with password
-  - app.js:2  (hunter...ke)
-  Fix: Move the connection string into an ignored .env file and change the
-  database password: anyone who can read the repo can log in to your database.
-
-[CRITICAL] Environment file is not ignored
-  - .env
-  Fix: Add `.env*` and `!.env.example` to .gitignore, run `git rm --cached <file>`,
-  and rotate any secret it contained. Commit a `.env.example` with empty values instead.
-
-[CRITICAL] Firebase rules allow public access
-  - firestore.rules:5
-  Fix: Replace `if true` / `true` with rules that check `request.auth` ...
-
-[WARNING] Supabase table without Row Level Security
-  - supabase/migrations/001_init.sql  (profiles)
-  Fix: Add `alter table <name> enable row level security;` and write policies ...
-
-[WARNING] Junk committed to the repo
-  - __pycache__/
-  - debug.log
-  - node_modules/
-  ...
-```
+![RepoDx scanning a sample project](docs/demo.svg)
 
 ## Installation
 
@@ -126,8 +96,8 @@ Run `repodx --badge` and paste the output into your README:
 | critical | API keys and tokens: OpenAI, Anthropic, AWS, GitHub, Stripe, Supabase secret keys, Slack, Hugging Face, Groq, SendGrid, Telegram bots, private keys |
 | critical | Supabase `service_role` JWTs (the JWT is decoded to check its role; public `anon` keys are not reported) |
 | critical | Database URLs with a real password (`postgres://`, `mysql://`, `mongodb+srv://`, `redis://` ...), except local hosts and placeholders |
-| critical | `.env`, `.env.local`, `.env.production` and similar files that are not ignored |
-| critical | Firebase `firestore.rules`, `storage.rules` or `database.rules.json` that allow public access |
+| critical | `.env` and `.env.local` files that are not ignored (other variants such as `.env.production`, and files with only `NEXT_PUBLIC_`/`VITE_` variables, are warnings) |
+| critical | Firebase `firestore.rules`, `storage.rules` or `database.rules.json` that let anyone write (public reads are reported as info) |
 | critical / warning | Files over 100 MB (GitHub rejects them) and over 50 MB |
 | warning | Google API keys (public if they are Firebase web keys, secret if they are Gemini, Maps or Cloud keys) |
 | warning | Supabase migrations that create tables without `enable row level security` |
@@ -138,12 +108,43 @@ Run `repodx --badge` and paste the output into your README:
 | info | README without Installation or Usage sections (English and Turkish headings are recognized) |
 | info | `AGENTS.md` or `CLAUDE.md` over 300 lines (coding agents tend to ignore long instruction files) |
 
+To keep false alarms rare, RepoDx:
+
+- skips values that look like documentation placeholders (`AKIAIOSFODNN7EXAMPLE`,
+  `[YOUR-PASSWORD]`, `xoxb-0000...`, `-----BEGIN PRIVATE KEY-----\n...`) and the
+  public demo keys of the local Supabase CLI
+- reports secrets and `.env` files in test and example folders as warnings, not
+  critical
+- only expects `node_modules/` in `.gitignore` when there is a `package.json`,
+  and `__pycache__/` when there are Python files
+
 RepoDx reads your `.gitignore`, including `!` re-include rules. Files that Git
 would not commit are not reported, and ignored folders are not scanned. Found
 secrets are masked in the output (`sk-pro...l2`).
 
 The score starts at 100. Each critical finding subtracts 25, each warning 8
-and each info 2. Grades: A ≥ 90, B ≥ 80, C ≥ 65, D ≥ 50, F below 50.
+and each info 2, and each kind of problem counts at most three times.
+Grades: A ≥ 90, B ≥ 80, C ≥ 65, D ≥ 50, F below 50.
+
+## Tested on real projects
+
+Before each release, RepoDx is run on large public repositories to catch false
+alarms. Results for 0.3.0:
+
+| Repository | Files | Time | Critical | Result |
+| --- | ---: | ---: | ---: | --- |
+| vercel/ai-chatbot | 181 | 0.1 s | 0 | 100 (A) |
+| langchain-ai/langchain | 3,165 | 2.3 s | 0 | 98 (A) |
+| fastapi/fastapi | 3,139 | 1.6 s | 0 | 90 (A) |
+| openai/openai-cookbook | 3,601 | 3.1 s | 0 | four data files over 50 MB |
+| psf/requests | 128 | 0.2 s | 0 | test certificates' private keys (warnings) |
+| supabase/supabase | 17,564 | 6.9 s | 0 | example tables without RLS, example `.env` files |
+| vercel/next.js | 32,215 | 7.5 s | 0 | example `.env` files, test certificates |
+| firebase/quickstart-js | 436 | 0.3 s | 1 | `database.rules.json` has `".write": true` (real) |
+
+The first version of these checks raised 136 critical alarms on the same
+repositories. Almost all of them were documentation placeholders and test
+fixtures, and the rules above were added to filter them out.
 
 ## Silencing false positives
 
@@ -165,6 +166,11 @@ and each info 2. Grades: A ≥ 90, B ≥ 80, C ≥ 65, D ≥ 50, F below 50.
 - It does not connect to your live Supabase or Firebase project. The RLS and
   rules checks only read the files in your repo.
 - It is a fast first check, not a full security audit.
+
+## Contributing
+
+Found a false alarm or a missed secret? [Open an issue](https://github.com/omerbek/repodx/issues/new/choose)
+with the line (with the secret replaced). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Development
 

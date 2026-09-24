@@ -376,6 +376,15 @@ class RepoDxTests(unittest.TestCase):
 
             self.assertEqual(result, [])
 
+    def test_check_readme_accepts_quickstart_style_headings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / "README.md").write_text("# App\n\n## Quickstart\n", encoding="utf-8")
+
+            result = repodx.check_readme(repo_path)
+
+            self.assertEqual(result, [])
+
     def test_check_readme_accepts_closed_atx_headings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_path = Path(temp_dir)
@@ -523,9 +532,9 @@ class RepoDxTests(unittest.TestCase):
         report = repodx.build_report(Path("sample_repo"))
         found = {(finding["id"], finding["path"], finding["detail"]) for finding in report["findings"]}
 
-        self.assertEqual(report["counts"], {"critical": 3, "warning": 8, "info": 3})
+        self.assertEqual(report["counts"], {"critical": 3, "warning": 7, "info": 3})
         self.assertEqual(report["grade"], "F")
-        self.assertIn(("database-url", "app.js", "hunter...ke"), found)
+        self.assertIn(("database-url", "app.js", "hunter...7v"), found)
         self.assertIn(("env-file", ".env", None), found)
         self.assertIn(("firebase-rules", "firestore.rules", None), found)
         self.assertIn(("supabase-rls", "supabase/migrations/001_init.sql", "profiles"), found)
@@ -560,11 +569,10 @@ class SecretScanTests(unittest.TestCase):
         keys = {
             "OpenAI API key": fake("sk-", "proj-", "A1b2C3d4E5f6G7h8I9j0K1l2"),
             "Anthropic API key": fake("sk-", "ant-", "api03-", "A1b2C3d4E5f6G7h8I9j0"),
-            "AWS access key": fake("AKIA", "ABCDEFGHIJKLMNOP"),
-            "GitHub token": fake("ghp", "_", "A" * 36),
+            "AWS access key": fake("AKIA", "Q7ZT4MWX9RB2KD5N"),
+            "GitHub token": fake("ghp", "_", "q7ZT4mWx9Rb2Kd5Nf8Lp3Hs6Vc1Yj0GuE4tA"),
             "Stripe secret key": fake("sk", "_live_", "A1b2C3d4E5f6G7h8I9j0K1"),
             "Supabase secret key": fake("sb", "_secret_", "A1b2C3d4E5f6G7h8I9j0K1"),
-            "Private key": fake("-----BEGIN ", "RSA PRIVATE KEY-----"),
         }
 
         for name, key in keys.items():
@@ -572,6 +580,66 @@ class SecretScanTests(unittest.TestCase):
                 hits = repodx.scan_line_for_secrets(f'const key = "{key}";')
 
                 self.assertEqual([(hit[0], hit[1], hit[2]) for hit in hits], [("secret", "critical", name)])
+
+    def test_ignores_documentation_placeholders(self):
+        lines = [
+            fake("aws_key = '", "AKIA", "IOSFODNN7EXAMPLE", "'"),
+            fake("SLACK_TOKEN=", "xoxb", "-0000000000-0000000000-abc"),
+            fake("api_key: '", "sb_secret_", "abcdefghijklmnopqrstuv", "'"),
+            fake("client_secret: '", "sb_secret_", "live_example_9f4d3a206b2e", "'"),
+            "postgres://postgres:[YOUR-PASSWORD]@db.abc.supabase.co:5432/postgres",
+            "postgres://postgres:********@db.abc.supabase.co:5432/postgres",
+            "postgres://app:$DB_PASSWORD@db.abc.supabase.co:5432/postgres",
+            "postgres://postgres:sbp_111222333aaabbbccc@db.prod-host.dev/postgres",
+            "postgresql://postgres:..@db.<ref>.supabase.co:5432/postgres",
+            "postgres://postgres:s3cr3t-value@db.{project-ref}.supabase.co/postgres",
+            "psql postgres://postgres:my_password@proxy.wasm.dev:5432",
+        ]
+
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertEqual(repodx.scan_line_for_secrets(line), [])
+
+    def test_ignores_supabase_cli_demo_jwt(self):
+        header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode().rstrip("=")
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"iss": "supabase-demo", "role": "service_role"}).encode()
+        ).decode().rstrip("=")
+
+        self.assertEqual(repodx.scan_line_for_secrets(f"k='{header}.{payload}.c2lnbmF0dXJlc2ln'"), [])
+
+    def test_private_key_needs_a_real_body(self):
+        header = fake("-----BEGIN ", "RSA PRIVATE KEY-----")
+        body = "MIIEowIBAAKCAQEAu7Qx9Zp3Lk2Vn8Wm4Rt6Yc1Hb5Jd0Gf7Ne2Sa9Ku3Xo8Pi6Lq4" * 2
+        real = f'key = "{header}\\n{body}\\n-----END RSA PRIVATE KEY-----"\n'
+        multiline = f"{header}\n{body[:64]}\n{body[64:]}\n"
+        template = f'key = "{header}\\n...\\n-----END RSA PRIVATE KEY-----"\n'
+        docs = f"> PRIVATE_KEY=\"{header}\n> ...\n> Kh9NV...\n"
+
+        self.assertEqual(list(repodx.find_private_keys(real)), [1])
+        self.assertEqual(list(repodx.find_private_keys(multiline)), [1])
+        self.assertEqual(list(repodx.find_private_keys(template)), [])
+        self.assertEqual(list(repodx.find_private_keys(docs)), [])
+
+    def test_secrets_in_test_files_are_warnings(self):
+        key = fake("sk-", "proj-", "A1b2C3d4E5f6G7h8I9j0K1l2")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(
+                temp_dir,
+                {"src/app.js": f"k='{key}'\n", "tests/test_app.py": f"k='{key}'\n", "src/api.test.ts": f"k='{key}'\n"},
+            )
+
+            result = findings_for(repo_path, "secret")
+
+        self.assertEqual(
+            sorted((f["path"], f["severity"], f["title"]) for f in result),
+            [
+                ("src/api.test.ts", "warning", "OpenAI API key in a test or example file"),
+                ("src/app.js", "critical", "OpenAI API key"),
+                ("tests/test_app.py", "warning", "OpenAI API key in a test or example file"),
+            ],
+        )
 
     def test_reports_secret_location_and_masks_value(self):
         key = fake("sk-", "proj-", "A1b2C3d4E5f6G7h8I9j0K1l2")
@@ -596,7 +664,7 @@ class SecretScanTests(unittest.TestCase):
             self.assertEqual(findings_for(repo_path, "env-file"), [])
 
     def test_inline_ignore_marker_suppresses_finding(self):
-        key = fake("AKIA", "ABCDEFGHIJKLMNOP")
+        key = fake("AKIA", "Q7ZT4MWX9RB2KD5N")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_path = make_repo(temp_dir, {"docs.md": f"Example: {key} <!-- repodx:ignore -->\n"})
@@ -604,7 +672,7 @@ class SecretScanTests(unittest.TestCase):
             self.assertEqual(findings_for(repo_path, "secret"), [])
 
     def test_repodxignore_excludes_paths(self):
-        key = fake("AKIA", "ABCDEFGHIJKLMNOP")
+        key = fake("AKIA", "Q7ZT4MWX9RB2KD5N")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_path = make_repo(
@@ -619,12 +687,12 @@ class SecretScanTests(unittest.TestCase):
     def test_skips_binary_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_path = Path(temp_dir)
-            (repo_path / "image.png").write_bytes(b"\x89PNG\0" + fake("AKIA", "ABCDEFGHIJKLMNOP").encode())
+            (repo_path / "image.png").write_bytes(b"\x89PNG\0" + fake("AKIA", "Q7ZT4MWX9RB2KD5N").encode())
 
             self.assertEqual(findings_for(repo_path, "secret"), [])
 
     def test_google_key_is_a_warning(self):
-        hits = repodx.scan_line_for_secrets(fake("apiKey: 'AIza", "A" * 35, "'"))
+        hits = repodx.scan_line_for_secrets(fake("apiKey: 'AIza", "Sy8Q7ZT4mWx9Rb2Kd5Nf8Lp3Hs6Vc1Yj0Gu", "'"))
 
         self.assertEqual([(hit[0], hit[1]) for hit in hits], [("google-api-key", "warning")])
 
@@ -667,6 +735,53 @@ class ConfigCheckTests(unittest.TestCase):
             [(".env", "critical"), (".env.local", "critical"), (".env.production", "warning")],
         )
 
+    def test_gitignore_expectations_follow_project_type(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            python_repo = make_repo(temp_dir, {".gitignore": ".env*\n", "main.py": ""})
+
+            self.assertEqual(
+                repodx.check_gitignore(python_repo, ["main.py"]),
+                ["Missing .gitignore entry: __pycache__/"],
+            )
+            self.assertEqual(
+                repodx.check_gitignore(python_repo, ["package.json"]),
+                ["Missing .gitignore entry: node_modules/"],
+            )
+
+    def test_github_action_dist_is_not_junk(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(
+                temp_dir,
+                {".github/actions/label/action.yml": "", ".github/actions/label/dist/index.js": "", "web/dist/app.js": ""},
+            )
+
+            self.assertEqual(repodx.find_junk_files(repo_path), ["web/dist/"])
+
+    def test_env_example_variants_are_not_env_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {".env.local.example": "A=\n", "main.py": "import os\nos.getenv('A')\n"})
+
+            self.assertEqual(findings_for(repo_path, "env-file"), [])
+            self.assertEqual(findings_for(repo_path, "env-example"), [])
+
+    def test_env_file_with_only_public_variables_is_a_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(
+                temp_dir, {".env": "# public\nNEXT_PUBLIC_URL=https://example.com\nEXPO_PUBLIC_API=/api\n"}
+            )
+
+            result = findings_for(repo_path, "env-file")
+
+        self.assertEqual([f["severity"] for f in result], ["warning"])
+
+    def test_env_file_in_examples_is_a_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {"examples/with-db/.env": "A=1\n"})
+
+            result = findings_for(repo_path, "env-file")
+
+        self.assertEqual([f["severity"] for f in result], ["warning"])
+
     def test_env_example_suggested_when_code_reads_env(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_path = make_repo(temp_dir, {"main.py": "import os\nkey = os.getenv('KEY')\n"})
@@ -698,17 +813,22 @@ class ConfigCheckTests(unittest.TestCase):
             repo_path = make_repo(
                 temp_dir,
                 {
-                    "firestore.rules": "allow read, write: if true;\n// allow read: if true;\n",
+                    "firestore.rules": "allow read, write: if true;\n// allow read: if true;\nallow read: if true;\n",
                     "database.rules.json": '{"rules": {".read": true, ".write": "auth != null"}}\n',
-                    "storage.rules": "allow read: if request.auth != null;\n",
+                    "storage.rules": "allow read: if request.auth != null;\nallow create: if true;\n",
                 },
             )
 
             result = findings_for(repo_path, "firebase-rules")
 
         self.assertEqual(
-            sorted((f["path"], f["line"]) for f in result),
-            [("database.rules.json", 1), ("firestore.rules", 1)],
+            sorted((f["path"], f["line"], f["severity"]) for f in result),
+            [
+                ("database.rules.json", 1, "info"),
+                ("firestore.rules", 1, "critical"),
+                ("firestore.rules", 3, "info"),
+                ("storage.rules", 2, "critical"),
+            ],
         )
 
     def test_large_files(self):
@@ -769,6 +889,13 @@ class ReportTests(unittest.TestCase):
 
         self.assertEqual((report["score"], report["grade"], report["findings"]), (100, "A", []))
 
+    def test_score_counts_each_kind_at_most_three_times(self):
+        many = [{"id": "junk", "severity": "warning"}] * 10
+        mixed = many + [{"id": "secret", "severity": "critical"}]
+
+        self.assertEqual(repodx.score_findings(many), 100 - 3 * 8)
+        self.assertEqual(repodx.score_findings(mixed), 100 - 3 * 8 - 25)
+
     def test_score_and_grade(self):
         self.assertEqual(repodx.grade_for_score(90), "A")
         self.assertEqual(repodx.grade_for_score(80), "B")
@@ -809,7 +936,7 @@ class ReportTests(unittest.TestCase):
 
         self.assertIn("## RepoDx: 0/100 (F)", markdown)
         self.assertIn("| critical | Environment file is not ignored | `.env` |", markdown)
-        self.assertIn("[CRITICAL] Firebase rules allow public access", text)
+        self.assertIn("[CRITICAL] Firebase rules allow public writes", text)
         self.assertIn("Fix: ", text)
         self.assertNotIn("\033[", text)
 
