@@ -3,6 +3,8 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Manual run from the Actions tab: tags the current commit as v<__version__>.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,19 +20,20 @@ jobs:
       - name: Run tests
         run: python3 -m unittest discover
 
-      - name: Check that the tag matches the version
+      - name: Work out the release tag
         run: |
           version=$(python3 -c "import repodx; print(repodx.__version__)")
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "Tag $GITHUB_REF_NAME does not match repodx.__version__ $version" >&2
             exit 1
           fi
+          echo "RELEASE_TAG=v$version" >> "$GITHUB_ENV"
 
       - name: Extract release notes from CHANGELOG.md
         run: |
           python3 - <<'PY'
           import os, re
-          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
           text = open("CHANGELOG.md", encoding="utf-8").read()
           match = re.search(rf"^## {re.escape(version)}\n(.*?)(?=^## |\Z)", text, re.M | re.S)
           notes = match.group(1).strip() if match else "See CHANGELOG.md."
@@ -46,4 +49,4 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" repodx.py --title "RepoDx $GITHUB_REF_NAME" --notes-file notes.md
+        run: gh release create "$RELEASE_TAG" repodx.py --target "$GITHUB_SHA" --title "RepoDx $RELEASE_TAG" --notes-file notes.md
