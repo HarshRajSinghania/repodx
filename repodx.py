@@ -8,10 +8,12 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import sys
 
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 COMMON_GITIGNORE_ENTRIES = ["__pycache__/", ".env", "node_modules/"]
 VIRTUAL_ENVIRONMENT_DIRECTORY_NAMES = [".venv", "venv", "env"]
@@ -1023,6 +1025,263 @@ def should_fail(report, fail_on):
     return any(report["counts"][severity] for severity in failing)
 
 
+FIX_GITIGNORE_HEADER = "# Added by repodx --fix"
+ENV_GITIGNORE_LINES = [".env", ".env.*", "!.env.example"]
+ENV_NAME_PATTERN = (
+    r"(?:process\.env\.|import\.meta\.env\.|Deno\.env\.get\(\s*['\"]|os\.getenv\(\s*['\"]"
+    r"|os\.environ\.get\(\s*['\"]|os\.environ\[\s*['\"])([A-Z][A-Z0-9_]*)"
+)  # repodx:ignore
+ENV_ASSIGNMENT_PATTERN = r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*="
+HOOK_MARKER = "# installed by repodx"
+
+
+def is_already_ignored(entries, line):
+    """Check a .gitignore line against the current entries using a sample path it would cover."""
+    if line in entries:
+        return True
+
+    if line.startswith("!"):
+        return False
+
+    if line.startswith("*."):
+        return is_path_ignored(entries, "example" + line[1:])
+
+    if line.endswith("/"):
+        return has_gitignore_entry(entries, line) or is_path_ignored(entries, line.rstrip("/"), True)
+
+    return has_gitignore_entry(entries, line) or is_path_ignored(entries, line)
+
+
+def gitignore_line_for_junk(path):
+    name = path.rstrip("/").rsplit("/", 1)[-1]
+
+    if path.endswith("/"):
+        return name + "/"
+
+    if name == ".DS_Store":
+        return name
+
+    return "*" + os.path.splitext(name)[1].lower()
+
+
+def gitignore_lines_to_add(repo_path, report, files):
+    entries, _ = read_gitignore_entries(repo_path)
+    wanted = []
+
+    if entries is None:
+        wanted += expected_gitignore_entries(files)
+
+    for finding in report["findings"]:
+        if finding["id"] == "gitignore" and finding["detail"]:
+            wanted.append(finding["detail"])
+        elif finding["id"] == "junk":
+            wanted.append(gitignore_line_for_junk(finding["path"]))
+        elif finding["id"] == "env-file" and finding["severity"] == "critical":
+            wanted += ENV_GITIGNORE_LINES
+
+    lines = []
+
+    for line in wanted:
+        if line not in lines and not is_already_ignored(entries or [], line):
+            lines.append(line)
+
+    # Only re-include the example file when the lines above would ignore it.
+    if lines == ["!.env.example"]:
+        return []
+
+    return lines
+
+
+def env_variable_names(repo_path, files):
+    names = []
+
+    for relative_text in files:
+        name = relative_text.rsplit("/", 1)[-1].lower()
+        text = read_text_file(repo_path / relative_text) or ""
+
+        if "/" not in relative_text and re.fullmatch(r"\.env(\..+)?", name) and not is_env_example_name(name):
+            found = re.findall(ENV_ASSIGNMENT_PATTERN, text, flags=re.MULTILINE)
+        elif re.search(ENV_USAGE_PATTERN, text):
+            found = re.findall(ENV_NAME_PATTERN, text)
+        else:
+            found = []
+
+        for variable in found:
+            if variable not in names:
+                names.append(variable)
+
+    return names
+
+
+def all_env_files(repo_path):
+    """Top-level .env files, including ignored ones, which scan_tree leaves out."""
+    return sorted(
+        path.name
+        for path in repo_path.iterdir()
+        if path.is_file() and re.fullmatch(r"\.env(\..+)?", path.name.lower()) and not is_env_example_name(path.name.lower())
+    )
+
+
+def apply_fixes(repo_path, report):
+    """Apply safe, repeatable fixes. Returns (changes made, steps left for the user)."""
+    _junk_items, files = scan_tree(repo_path)
+    changes = []
+    manual = []
+
+    lines = gitignore_lines_to_add(repo_path, report, files)
+    gitignore_path = repo_path / ".gitignore"
+
+    try:
+        existing = gitignore_path.read_text(encoding="utf-8") if gitignore_path.exists() else ""
+    except (UnicodeDecodeError, OSError):
+        manual.append("Could not read .gitignore, so it was not changed. Save it as UTF-8 and run --fix again.")
+        lines = []
+
+    if lines:
+        prefix = "" if not existing or existing.endswith("\n") else "\n"
+        prefix += "\n" if existing else ""
+        gitignore_path.write_text(
+            existing + prefix + FIX_GITIGNORE_HEADER + "\n" + "\n".join(lines) + "\n", encoding="utf-8"
+        )
+        action = "Updated" if existing else "Created"
+        changes.append(f"{action} .gitignore: added {', '.join(lines)}")
+
+    wants_example = any(finding["id"] in ["env-file", "env-example"] for finding in report["findings"])
+    has_example = any(is_env_example_name(path.name.lower()) for path in repo_path.iterdir() if path.is_file())
+
+    if wants_example and not has_example:
+        names = env_variable_names(repo_path, files + [name for name in all_env_files(repo_path) if name not in files])
+
+        if names:
+            text = "# Copy this file to .env and fill in the values. Created by repodx --fix.\n"
+            text += "".join(f"{name}=\n" for name in names)
+            (repo_path / ".env.example").write_text(text, encoding="utf-8")
+            changes.append(f"Created .env.example with {len(names)} variable name(s) and empty values")
+
+    tracked = [f["path"] for f in report["findings"] if f["id"] in ["junk", "env-file"] and f["severity"] != "info"]
+
+    if tracked:
+        paths = " ".join(f'"{path.rstrip("/")}"' for path in tracked)
+        manual.append(f"If Git already tracks them, stop tracking (files stay on disk): git rm -r --cached {paths}")
+
+    leaked = [f for f in report["findings"] if f["id"] in ["secret", "supabase-service-role", "database-url"]]
+
+    if leaked:
+        manual.append(
+            f"Rotate the {len(leaked)} leaked secret(s) in each provider's dashboard, then move them to .env. "
+            "Run `repodx --prompt` to get instructions for your AI coding tool."
+        )
+
+    return changes, manual
+
+
+def format_fix_summary(fixes, report):
+    lines = ["RepoDx --fix"]
+
+    if fixes["changes"]:
+        lines += [f"  Fixed: {change}" for change in fixes["changes"]]
+    else:
+        lines.append("  Nothing to fix automatically.")
+
+    lines += [f"  Do this yourself: {step}" for step in fixes["manual"]]
+    lines.append(f"  Score: {fixes['score_before']} -> {report['score']}/100 ({report['grade']})")
+    return "\n".join(lines)
+
+
+def format_prompt(report):
+    if not report["findings"]:
+        return "RepoDx found no problems in this project. Nothing to fix."
+
+    lines = [
+        f"You are fixing security and repo hygiene problems that RepoDx found in this project "
+        f"(score {report['score']}/100, grade {report['grade']}).",
+        "",
+        "Problems:",
+    ]
+
+    for number, ((severity, _check_id, title), group) in enumerate(group_findings(report["findings"]).items(), 1):
+        lines.append(f"{number}. [{severity.upper()}] {title}")
+        locations = [finding_location(finding) for finding in group if finding_location(finding)]
+
+        if locations:
+            lines.append(f"   Where: {'; '.join(locations)}")
+
+        lines.append(f"   How to fix: {group[0]['fix']}")
+
+    lines += [
+        "",
+        "Rules:",
+        "- Never print, log or commit secret values. They are masked above; open the files only to move them.",
+        "- Move secrets into environment variables, read them in code, and list the variable names with empty "
+        "values in .env.example.",
+        "- Keep .env files out of Git with .gitignore. Don't delete or rewrite unrelated code.",
+        "- Ask me before running `git rm --cached`, deleting files or rewriting Git history.",
+        "- Remind me to rotate every leaked key in the provider dashboard. Removing it from the code is not enough.",
+        "- When you're done, run `repodx .` and show me the new score.",
+    ]
+    return "\n".join(lines)
+
+
+def git_hooks_dir(repo_path):
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-path", "hooks"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    hooks_path = Path(result.stdout.strip())
+    return hooks_path if hooks_path.is_absolute() else repo_path / hooks_path
+
+
+def hook_command():
+    if shutil.which("repodx"):
+        return "repodx"
+
+    # Running from a downloaded repodx.py: call this exact file with this Python.
+    return f'"{Path(sys.executable).as_posix()}" "{Path(__file__).resolve().as_posix()}"'
+
+
+def hook_script():
+    return (
+        "#!/bin/sh\n"
+        f"{HOOK_MARKER}: blocks commits while RepoDx finds critical problems (leaked keys, .env files).\n"
+        "# Skip it once with: git commit --no-verify\n"
+        f'output=$({hook_command()} --fail-on critical "$(git rev-parse --show-toplevel)" 2>&1) || {{\n'
+        '  echo "$output"\n'
+        '  echo ""\n'
+        '  echo "repodx: commit blocked because of critical findings above."\n'
+        "  exit 1\n"
+        "}\n"
+    )
+
+
+def install_hook(repo_path):
+    hooks_dir = git_hooks_dir(repo_path)
+
+    if hooks_dir is None:
+        print(f"Error: {repo_path} is not inside a Git repository (or git is not installed).", file=sys.stderr)
+        return 2
+
+    hook_path = hooks_dir / "pre-commit"
+
+    if hook_path.exists() and HOOK_MARKER not in hook_path.read_text(encoding="utf-8", errors="replace"):
+        print(f"A pre-commit hook already exists at {hook_path} and was not installed by RepoDx.")
+        print(f"Add this line to it instead: {hook_command()} --fail-on critical .")
+        return 1
+
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_path.write_text(hook_script(), encoding="utf-8")
+    hook_path.chmod(0o755)
+    print(f"Installed a pre-commit hook at {hook_path}")
+    print("Commits are now blocked while RepoDx finds critical problems. Skip once with: git commit --no-verify")
+    return 0
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="repodx",
@@ -1036,7 +1295,7 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--format",
-        choices=["text", "json", "markdown"],
+        choices=["text", "json", "markdown", "prompt"],
         default="text",
         help="Output format. Defaults to text.",
     )
@@ -1046,6 +1305,23 @@ def parse_args(argv=None):
         action="store_const",
         const="json",
         help="Shortcut for --format json.",
+    )
+    parser.add_argument(
+        "--prompt",
+        dest="format",
+        action="store_const",
+        const="prompt",
+        help="Print a ready-to-paste prompt that tells your AI coding tool how to fix the findings.",
+    )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Apply safe fixes (.gitignore entries, .env.example), then scan again.",
+    )
+    parser.add_argument(
+        "--install-hook",
+        action="store_true",
+        help="Install a Git pre-commit hook that blocks commits with critical findings.",
     )
     parser.add_argument(
         "--fail-on",
@@ -1070,16 +1346,32 @@ def main(argv=None):
         print(f"Error: path is not a directory: {repo_path}", file=sys.stderr)
         return 2
 
+    if args.install_hook:
+        return install_hook(repo_path)
+
     report = build_report(repo_path)
+    fixes = None
+
+    if args.fix:
+        score_before = report["score"]
+        changes, manual = apply_fixes(repo_path, report)
+        report = build_report(repo_path)
+        fixes = {"changes": changes, "manual": manual, "score_before": score_before}
 
     if args.badge:
         print(badge_markdown(report))
     elif args.format == "json":
-        print(json.dumps(report, indent=2))
-    elif args.format == "markdown":
-        print(format_markdown(report))
+        print(json.dumps(dict(report, fixes=fixes) if fixes else report, indent=2))
+    elif args.format == "prompt":
+        print(format_prompt(report))
     else:
-        print(format_text(report, color=use_color(sys.stdout)))
+        if fixes:
+            print(format_fix_summary(fixes, report) + "\n")
+
+        if args.format == "markdown":
+            print(format_markdown(report))
+        else:
+            print(format_text(report, color=use_color(sys.stdout)))
 
     return 1 if should_fail(report, args.fail_on) else 0
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- `repodx --fix` adds missing `.gitignore` lines and creates a `.env.example` with empty values, then scans again and shows the new score. It never deletes files or edits code, and running it twice changes nothing.
+- `repodx --prompt` prints a ready-to-paste prompt for AI coding tools with every finding, its location and its fix, and rules against leaking secret values.
+- `repodx --install-hook` installs a Git pre-commit hook that blocks commits with critical findings. It doesn't overwrite existing hooks it didn't install.
+- PyPI page shows the author and links to issues and the changelog.
+
 ## 0.3.2
 
 - Releases are now published to PyPI automatically by the release workflow (trusted publishing, no API tokens).
