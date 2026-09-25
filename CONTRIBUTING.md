@@ -3,6 +3,17 @@
 Thanks for helping! RepoDx stays small on purpose: one Python file, no
 dependencies, and checks that a beginner can read.
 
+## Your first contribution
+
+1. Pick an issue labeled
+   [`good first issue`](https://github.com/omerbek/repodx/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+   and comment that you're taking it, so two people don't do the same work.
+2. Fork the repo, make the change on a branch, and run the tests (see below).
+3. Open a PR that says `Fixes #<issue number>`. A maintainer reviews it, usually
+   within a day.
+
+One issue per PR keeps reviews quick.
+
 ## Reporting a false alarm or a missed secret
 
 Open an issue with:
