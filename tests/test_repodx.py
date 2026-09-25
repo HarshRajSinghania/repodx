@@ -921,6 +921,40 @@ class ReportTests(unittest.TestCase):
             with mock.patch("sys.stderr", new=io.StringIO()):
                 self.assertEqual(repodx.main([str(repo_path / "missing")]), 2)
 
+    def test_quiet_output_is_one_line_and_keeps_exit_codes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = self.clean_repo(temp_dir)
+            output = io.StringIO()
+
+            with mock.patch("sys.stdout", new=output):
+                exit_code = repodx.main([str(repo_path), "--quiet"])
+
+            line = output.getvalue().strip()
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(line.count("\n"), 0)
+            self.assertTrue(line.startswith("RepoDx: 100/100 (A), "))
+            self.assertIn("critical", line)
+            self.assertIn("warnings", line)
+            self.assertIn("info", line)
+
+            (repo_path / "debug.log").write_text("log", encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch("sys.stdout", new=output):
+                self.assertEqual(repodx.main([str(repo_path), "--quiet"]), 1)
+                self.assertEqual(repodx.main([str(repo_path), "--quiet", "--fail-on", "critical"]), 0)
+            quiet_line = output.getvalue().strip().splitlines()[0]
+            self.assertTrue(quiet_line.startswith("RepoDx: "))
+            self.assertIn("warnings", quiet_line)
+
+            report = repodx.build_report(Path("sample_repo"))
+            expected = (
+                f"RepoDx: {report['score']}/100 ({report['grade']}), "
+                f"{report['counts']['critical']} critical, "
+                f"{report['counts']['warning']} warnings, "
+                f"{report['counts']['info']} info"
+            )
+            self.assertEqual(repodx.format_quiet(report), expected)
+
     def test_json_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_path = self.clean_repo(temp_dir)

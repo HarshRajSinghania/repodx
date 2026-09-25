@@ -55,6 +55,7 @@ repodx --fix              # apply safe fixes, then scan again
 repodx --prompt           # prompt to paste into Cursor, Claude Code or Lovable
 repodx --install-hook     # block commits with critical findings
 repodx --json             # machine-readable output
+repodx --quiet            # one-line score for scripts and hooks
 repodx --format markdown  # report for PR comments or CI summaries
 repodx --badge            # print a README badge with your score
 repodx --fail-on critical # only fail on critical findings (default: warning)
