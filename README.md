@@ -205,8 +205,20 @@ fixtures, and the rules above were added to filter them out.
 
 ## Contributing
 
+First-time contributors are very welcome. Each
+[good first issue](https://github.com/omerbek/repodx/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+is a small, self-contained task, usually adding one secret provider with a
+test, and explains exactly which lines to change. Comment on an issue to claim
+it, then open a PR. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Found a false alarm or a missed secret? [Open an issue](https://github.com/omerbek/repodx/issues/new/choose)
-with the line (with the secret replaced). See [CONTRIBUTING.md](CONTRIBUTING.md).
+with the line (with the secret replaced).
+
+### Contributors
+
+Thanks to everyone who has made RepoDx better:
+
+[![Contributors](https://contrib.rocks/image?repo=omerbek/repodx)](https://github.com/omerbek/repodx/graphs/contributors)
 
 ## Support
 
