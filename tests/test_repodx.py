@@ -921,6 +921,31 @@ class ReportTests(unittest.TestCase):
             with mock.patch("sys.stderr", new=io.StringIO()):
                 self.assertEqual(repodx.main([str(repo_path / "missing")]), 2)
 
+    def test_quiet_prints_only_score_line(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = self.clean_repo(temp_dir)
+            output = io.StringIO()
+
+            with mock.patch("sys.stdout", new=output):
+                code = repodx.main([str(repo_path), "--quiet"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(output.getvalue(), "RepoDx: 100/100 (A), 0 critical, 0 warnings, 0 info\n")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = self.clean_repo(temp_dir)
+            (repo_path / "debug.log").write_text("log", encoding="utf-8")
+            output = io.StringIO()
+
+            with mock.patch("sys.stdout", new=output):
+                code = repodx.main([str(repo_path), "--quiet", "--fail-on", "warning"])
+
+        self.assertEqual(code, 1)
+        line = output.getvalue().strip()
+        self.assertTrue(line.startswith("RepoDx: "))
+        self.assertIn("warnings", line)
+        self.assertEqual(line.count("\n"), 0)
+
     def test_json_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_path = self.clean_repo(temp_dir)

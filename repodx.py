@@ -1324,6 +1324,11 @@ def parse_args(argv=None):
         help="Install a Git pre-commit hook that blocks commits with critical findings.",
     )
     parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Print only the score line when --format is text.",
+    )
+    parser.add_argument(
         "--fail-on",
         choices=SEVERITIES + ["never"],
         default="warning",
@@ -1360,6 +1365,12 @@ def main(argv=None):
 
     if args.badge:
         print(badge_markdown(report))
+    elif args.quiet and args.format == "text":
+        counts = report["counts"]
+        print(
+            f"RepoDx: {report['score']}/100 ({report['grade']}), "
+            f"{counts['critical']} critical, {counts['warning']} warnings, {counts['info']} info"
+        )
     elif args.format == "json":
         print(json.dumps(dict(report, fixes=fixes) if fixes else report, indent=2))
     elif args.format == "prompt":
