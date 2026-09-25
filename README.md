@@ -2,6 +2,7 @@
 
 [![tests](https://github.com/omerbek/repodx/actions/workflows/tests.yml/badge.svg)](https://github.com/omerbek/repodx/actions/workflows/tests.yml)
 [![repodx](https://img.shields.io/badge/repodx-A%20100%2F100-brightgreen)](https://github.com/omerbek/repodx)
+[![Sponsor](https://img.shields.io/github/sponsors/omerbek?label=Sponsor&logo=GitHub)](https://github.com/sponsors/omerbek)
 
 **Check your AI-built project before you push it.**
 One command, zero dependencies, and nothing leaves your machine.
@@ -186,6 +187,7 @@ RepoDx is free and MIT licensed. If it saved you from a leaked key:
 
 - Star the repo, it helps other people find it.
 - Report false alarms and missed problems in [issues](https://github.com/omerbek/repodx/issues).
+- Sponsor on GitHub: https://github.com/sponsors/omerbek
 - Donations are welcome at this Ethereum address (ETH or ERC-20 tokens on Ethereum mainnet):
 
   ```text
