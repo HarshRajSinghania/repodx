@@ -39,9 +39,9 @@ curl -sSL https://github.com/omerbek/repodx/releases/latest/download/repodx.py |
 Install the tagged GitHub version directly:
 
 ```bash
-pipx install git+https://github.com/omerbek/repodx@v0.3.2
+pipx install git+https://github.com/omerbek/repodx@v0.4.0
 # or
-uv tool install git+https://github.com/omerbek/repodx@v0.3.2
+uv tool install git+https://github.com/omerbek/repodx@v0.4.0
 ```
 
 On Windows, you can also download `repodx.py` and run `python repodx.py .`
@@ -51,6 +51,9 @@ On Windows, you can also download `repodx.py` and run `python repodx.py .`
 ```bash
 repodx                    # scan the current folder
 repodx path/to/project    # scan another folder
+repodx --fix              # apply safe fixes, then scan again
+repodx --prompt           # prompt to paste into Cursor, Claude Code or Lovable
+repodx --install-hook     # block commits with critical findings
 repodx --json             # machine-readable output
 repodx --format markdown  # report for PR comments or CI summaries
 repodx --badge            # print a README badge with your score
@@ -59,6 +62,30 @@ repodx --fail-on critical # only fail on critical findings (default: warning)
 
 Exit codes: `0` means nothing at or above `--fail-on` was found, `1` means
 something was found, and `2` means the path is not a folder.
+
+### Fix it
+
+**`repodx --fix`** applies the fixes that are always safe, then scans again:
+
+- adds the missing lines to `.gitignore` (`.env`, `node_modules/`, `*.log`, ...)
+  and creates the file if it doesn't exist
+- creates a `.env.example` with the variable names from your `.env` files and
+  code, with the values left empty
+
+It never deletes files, touches Git history or edits your code. For the rest it
+prints what to do yourself, such as `git rm -r --cached` for files Git already
+tracks and rotating leaked keys. Running it twice changes nothing.
+
+**`repodx --prompt`** prints a prompt for your AI coding tool: every problem with
+its location and fix, plus rules such as "never print or commit secret values"
+and "run `repodx .` when you're done". Paste it into Cursor, Claude Code, Lovable
+or Bolt.
+
+**`repodx --install-hook`** installs a Git `pre-commit` hook, so a commit is
+blocked while RepoDx finds a critical problem such as a leaked key or an
+unignored `.env` file. A secret stopped before the commit never enters your Git
+history. Skip the check once with `git commit --no-verify`. RepoDx doesn't
+overwrite a `pre-commit` hook that it didn't install.
 
 ### GitHub Action
 
@@ -71,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: omerbek/repodx@v0.3.2
+      - uses: omerbek/repodx@v0.4.0
         with:
           fail-on: warning # critical, warning, info or never
 ```
@@ -85,7 +112,7 @@ problems.
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/omerbek/repodx
-    rev: v0.3.2
+    rev: v0.4.0
     hooks:
       - id: repodx
 ```

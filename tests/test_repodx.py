@@ -1,7 +1,10 @@
 import base64
 import io
 import json
+import os
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -961,6 +964,172 @@ class ReportTests(unittest.TestCase):
             "[![repodx](https://img.shields.io/badge/repodx-A%2094%2F100-brightgreen)]"
             "(https://github.com/omerbek/repodx)",
         )
+
+
+class FixTests(unittest.TestCase):
+    def test_fix_updates_gitignore_and_creates_env_example_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(
+                temp_dir,
+                {
+                    ".gitignore": "*.tmp",
+                    ".env": "OPENAI_API_KEY=" + fake("sk-", "proj-", "A1b2C3d4E5f6G7h8I9j0K1l2") + "\nexport PORT=3000\n",
+                    "package.json": "{}",
+                    "node_modules/x.js": "",
+                    "debug.log": "log",
+                    "app.js": "const url = process.env.DATABASE_URL;\n",
+                },
+            )
+            before = repodx.build_report(repo_path)
+
+            changes, manual = repodx.apply_fixes(repo_path, before)
+            after = repodx.build_report(repo_path)
+            second_changes, _ = repodx.apply_fixes(repo_path, after)
+
+            gitignore = (repo_path / ".gitignore").read_text(encoding="utf-8")
+            example = (repo_path / ".env.example").read_text(encoding="utf-8")
+
+        self.assertTrue(gitignore.startswith("*.tmp\n\n# Added by repodx --fix\n"))
+        for line in [".env", ".env.*", "!.env.example", "node_modules/", "*.log"]:
+            self.assertIn("\n" + line + "\n", gitignore)
+        self.assertIn("OPENAI_API_KEY=\n", example)
+        self.assertIn("PORT=\n", example)
+        self.assertIn("DATABASE_URL=\n", example)
+        self.assertNotIn("sk-proj", example)
+        self.assertEqual(len(changes), 2)
+        self.assertTrue(any("git rm -r --cached" in step for step in manual))
+        self.assertGreater(after["score"], before["score"])
+        self.assertEqual(second_changes, [])
+
+    def test_fix_creates_missing_gitignore(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {"main.py": "print('hi')\n"})
+
+            changes, _ = repodx.apply_fixes(repo_path, repodx.build_report(repo_path))
+            gitignore = (repo_path / ".gitignore").read_text(encoding="utf-8")
+
+        self.assertEqual(changes, ["Created .gitignore: added __pycache__/, .env"])
+        self.assertEqual(gitignore, "# Added by repodx --fix\n__pycache__/\n.env\n")
+
+    def test_fix_leaves_unreadable_gitignore_alone(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            (repo_path / ".gitignore").write_bytes(b"\xff\xfe\x00bad")
+            (repo_path / "debug.log").write_text("log", encoding="utf-8")
+
+            changes, manual = repodx.apply_fixes(repo_path, repodx.build_report(repo_path))
+
+            self.assertEqual((repo_path / ".gitignore").read_bytes(), b"\xff\xfe\x00bad")
+        self.assertEqual(changes, [])
+        self.assertIn("Could not read .gitignore", manual[0])
+
+    def test_fix_keeps_existing_env_example(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {".env": "A=1\n", ".env.sample": "A=\n"})
+
+            repodx.apply_fixes(repo_path, repodx.build_report(repo_path))
+
+            self.assertFalse((repo_path / ".env.example").exists())
+            self.assertEqual((repo_path / ".env.sample").read_text(encoding="utf-8"), "A=\n")
+
+    def test_main_fix_prints_summary_and_uses_rescan_exit_code(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(
+                temp_dir,
+                {"LICENSE": "MIT", "README.md": "# App\n\n## Installation\n\n## Usage\n", "debug.log": "log"},
+            )
+            output = io.StringIO()
+
+            with mock.patch("sys.stdout", new=output):
+                exit_code = repodx.main([str(repo_path), "--fix"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Fixed: Created .gitignore", output.getvalue())
+        self.assertIn("-> 100/100 (A)", output.getvalue())
+
+
+class PromptTests(unittest.TestCase):
+    def test_prompt_lists_findings_with_fixes_and_masks_secrets(self):
+        key = fake("sk-", "proj-", "A1b2C3d4E5f6G7h8I9j0K1l2")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = make_repo(temp_dir, {"src/app.js": f"const k = '{key}';\n"})
+            output = io.StringIO()
+
+            with mock.patch("sys.stdout", new=output):
+                repodx.main([str(repo_path), "--prompt"])
+
+        prompt = output.getvalue()
+        self.assertIn("[CRITICAL] OpenAI API key", prompt)
+        self.assertIn("Where: src/app.js:1  (sk-pro...l2)", prompt)
+        self.assertIn("How to fix: Delete the key", prompt)
+        self.assertIn("run `repodx .`", prompt)
+        self.assertNotIn(key, prompt)
+
+    def test_prompt_without_findings(self):
+        report = {"findings": [], "score": 100, "grade": "A"}
+
+        self.assertEqual(repodx.format_prompt(report), "RepoDx found no problems in this project. Nothing to fix.")
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class InstallHookTests(unittest.TestCase):
+    def git(self, repo_path, *args):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_installs_hook_that_blocks_commits_with_critical_findings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            self.git(repo_path, "init", "-q")
+
+            with mock.patch.object(repodx.shutil, "which", return_value=None), mock.patch(
+                "sys.stdout", new=io.StringIO()
+            ):
+                self.assertEqual(repodx.main([str(repo_path), "--install-hook"]), 0)
+                # Reinstalling over our own hook is fine.
+                self.assertEqual(repodx.main([str(repo_path), "--install-hook"]), 0)
+
+            hook_path = repo_path / ".git" / "hooks" / "pre-commit"
+            self.assertIn(repodx.HOOK_MARKER, hook_path.read_text(encoding="utf-8"))
+            self.assertTrue(os.access(hook_path, os.X_OK))
+
+            (repo_path / "notes.txt").write_text("hello\n", encoding="utf-8")
+            self.git(repo_path, "add", "notes.txt")
+            self.assertEqual(self.git(repo_path, "commit", "-qm", "ok").returncode, 0)
+
+            key = fake("sk-", "proj-", "A1b2C3d4E5f6G7h8I9j0K1l2")
+            (repo_path / "app.js").write_text(f"const k = '{key}';\n", encoding="utf-8")
+            self.git(repo_path, "add", "app.js")
+            blocked = self.git(repo_path, "commit", "-qm", "leak")
+
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertIn("commit blocked", blocked.stdout + blocked.stderr)
+
+    def test_does_not_overwrite_a_foreign_hook(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = Path(temp_dir)
+            self.git(repo_path, "init", "-q")
+            hook_path = repo_path / ".git" / "hooks" / "pre-commit"
+            hook_path.parent.mkdir(parents=True, exist_ok=True)
+            hook_path.write_text("#!/bin/sh\necho mine\n", encoding="utf-8")
+
+            with mock.patch("sys.stdout", new=io.StringIO()):
+                exit_code = repodx.main([str(repo_path), "--install-hook"])
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(hook_path.read_text(encoding="utf-8"), "#!/bin/sh\necho mine\n")
+
+    def test_outside_a_git_repository(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(repodx, "git_hooks_dir", return_value=None), mock.patch(
+                "sys.stderr", new=io.StringIO()
+            ):
+                self.assertEqual(repodx.main([temp_dir, "--install-hook"]), 2)
 
 
 if __name__ == "__main__":
