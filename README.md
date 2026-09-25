@@ -180,6 +180,18 @@ fixtures, and the rules above were added to filter them out.
 Found a false alarm or a missed secret? [Open an issue](https://github.com/omerbek/repodx/issues/new/choose)
 with the line (with the secret replaced). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Support
+
+RepoDx is free and MIT licensed. If it saved you from a leaked key:
+
+- Star the repo, it helps other people find it.
+- Report false alarms and missed problems in [issues](https://github.com/omerbek/repodx/issues).
+- Donations are welcome at this Ethereum address (ETH or ERC-20 tokens on Ethereum mainnet):
+
+  ```text
+  0xb74e0A471bC60BB52067353C024e9bBA5a123F48
+  ```
+
 ## Development
 
 RepoDx is a single Python file with no dependencies, so it is easy to read and
