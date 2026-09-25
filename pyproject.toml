@@ -9,6 +9,7 @@ description = "Check your AI-built project for leaked secrets, unsafe Supabase/F
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
+authors = [{ name = "Omer", email = "omersukrubektas@gmail.com" }]
 dependencies = []
 keywords = ["secrets", "security", "gitignore", "supabase", "firebase", "vibe-coding", "pre-commit", "cli"]
 classifiers = [
@@ -21,6 +22,9 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/omerbek/repodx"
+Source = "https://github.com/omerbek/repodx"
+Issues = "https://github.com/omerbek/repodx/issues"
+Changelog = "https://github.com/omerbek/repodx/blob/main/CHANGELOG.md"
 
 [project.scripts]
 repodx = "repodx:cli"
